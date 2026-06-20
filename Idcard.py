@@ -3,6 +3,8 @@ import numpy as np
 import os
 import time
 from collections import Counter
+
+# Order corner points
 def order_points(pts):
     rect = np.zeros((4, 2), dtype="float32")
     s = pts.sum(axis=1)
@@ -12,6 +14,8 @@ def order_points(pts):
     rect[1] = pts[np.argmin(diff)]
     rect[3] = pts[np.argmax(diff)]
     return rect
+
+# Warp perspective to rectify card
 def get_perspective_transform(frame, pts, width=856, height=540):
     ordered_pts = order_points(pts)
     dst_pts = np.array([
@@ -23,10 +27,14 @@ def get_perspective_transform(frame, pts, width=856, height=540):
     M = cv2.getPerspectiveTransform(ordered_pts, dst_pts)
     warped = cv2.warpPerspective(frame, M, (width, height))
     return warped
+
+# Check if image is blurry
 def is_blurry(image, threshold=60.0):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     variance = cv2.Laplacian(gray, cv2.CV_64F).var()
     return variance < threshold, variance
+
+# Load templates for classification
 def load_templates(template_dir):
     templates = {}
     id_path = os.path.join(template_dir, "id_card_emblem.png")
@@ -54,6 +62,8 @@ def load_templates(template_dir):
     else:
         print(f"  Could not load {dl_path}")
     return templates
+
+# Classify document using template matching
 def classify_document(warped_card, templates, match_threshold=0.45):
     if not templates:
         return "NO TEMPLATES", (128, 128, 128), 0.0, {}
@@ -102,6 +112,8 @@ def classify_document(warped_card, templates, match_threshold=0.45):
         return label, color, best_score, all_scores
     else:
         return "OTHER DOCUMENT", (0, 0, 255), best_score, all_scores
+
+# Select camera source
 def select_camera():
     print("")
     print("SELECT CAMERA SOURCE")
@@ -118,6 +130,8 @@ def select_camera():
             return cv2.VideoCapture(url)
         else:
             print("Invalid choice try again")
+
+# Main application loop
 def main():
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     output_dir = os.path.join(BASE_DIR, "saved_id_cards")
@@ -237,6 +251,6 @@ def main():
                 print("No card detected")
     cap.release()
     cv2.destroyAllWindows()
+
 if __name__ == "__main__":
-    main()
     main()
