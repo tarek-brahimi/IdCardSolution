@@ -16,15 +16,24 @@ def order_points(pts):
     return rect
 
 # Warp perspective to rectify card
-def get_perspective_transform(frame, pts, width=856, height=540):
+def get_perspective_transform(frame, pts, width=856, height=540, margin=15):
     ordered_pts = order_points(pts)
+    center = ordered_pts.mean(axis=0)
+    expanded_pts = np.zeros_like(ordered_pts)
+    for i in range(4):
+        direction = ordered_pts[i] - center
+        norm = np.linalg.norm(direction)
+        if norm > 0:
+            expanded_pts[i] = ordered_pts[i] + (direction / norm) * margin
+        else:
+            expanded_pts[i] = ordered_pts[i]
     dst_pts = np.array([
         [0, 0],
         [width - 1, 0],
         [width - 1, height - 1],
         [0, height - 1]
     ], dtype="float32")
-    M = cv2.getPerspectiveTransform(ordered_pts, dst_pts)
+    M = cv2.getPerspectiveTransform(expanded_pts, dst_pts)
     warped = cv2.warpPerspective(frame, M, (width, height))
     return warped
 
@@ -81,9 +90,9 @@ def load_templates(template_dir):
 
 # ROI regions for each template
 ROI_REGIONS = {
-    "id_card":        {"y1": 0.00, "y2": 0.40, "x1": 0.00, "x2": 0.30},
-    "id_card_verso":  {"y1": 0.00, "y2": 0.45, "x1": 0.55, "x2": 1.00},
-    "driver_license": {"y1": 0.00, "y2": 0.30, "x1": 0.00, "x2": 0.20},
+    "id_card":        {"y1": 0.00, "y2": 0.45, "x1": 0.00, "x2": 0.30},
+    "id_card_verso":  {"y1": 0.00, "y2": 0.50, "x1": 0.50, "x2": 1.00},
+    "driver_license": {"y1": 0.00, "y2": 0.35, "x1": 0.00, "x2": 0.25},
 }
 
 # Match one template against a region of the card
@@ -96,8 +105,8 @@ def match_template_in_roi(card_gray, template_gray, roi_cfg):
     x2 = int(card_w * roi_cfg["x2"])
     roi_gray = card_gray[y1:y2, x1:x2]
     roi_h, roi_w = roi_gray.shape[:2]
-    target_w = int(roi_w * 0.85)
-    target_h = int(roi_h * 0.85)
+    target_w = int(roi_w * 0.90)
+    target_h = int(roi_h * 0.90)
     scale = min(target_w / tpl_w, target_h / tpl_h)
     new_w = max(int(tpl_w * scale), 1)
     new_h = max(int(tpl_h * scale), 1)
