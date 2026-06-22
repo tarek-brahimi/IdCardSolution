@@ -270,7 +270,7 @@ def main():
     if OCR_AVAILABLE:
         print("Initializing PaddleOCR...")
         # Use 'ar' lang because it supports English/French + Arabic digits and text
-        ocr_reader = PaddleOCR(use_angle_cls=False, lang='ar', show_log=False)
+        ocr_reader = PaddleOCR(use_textline_orientation=False, lang='ar')
         print("PaddleOCR Initialized.")
     else:
         print("PaddleOCR not installed. OCR disabled.")
