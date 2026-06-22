@@ -2,7 +2,15 @@ import cv2
 import numpy as np
 import os
 import time
+import threading
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
+
+try:
+    from paddleocr import PaddleOCR
+    OCR_AVAILABLE = True
+except ImportError:
+    OCR_AVAILABLE = False
 
 # Order corner points
 def order_points(pts):
@@ -42,6 +50,52 @@ def is_blurry(image, threshold=60.0):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     variance = cv2.Laplacian(gray, cv2.CV_64F).var()
     return variance < threshold, variance
+
+# --- OCR Integration ---
+OCR_ROIS = {
+    "ID CARD RECTO": {
+        "Name_AR": {"y1": 0.10, "y2": 0.40, "x1": 0.50, "x2": 1.00},
+        "DOB":     {"y1": 0.35, "y2": 0.60, "x1": 0.50, "x2": 1.00},
+        "NIN":     {"y1": 0.65, "y2": 0.90, "x1": 0.30, "x2": 1.00},
+    },
+    "ID CARD VERSO": {
+        "Name_FR": {"y1": 0.05, "y2": 0.45, "x1": 0.00, "x2": 0.60},
+    }
+}
+
+def extraire_texte_roi(ocr_reader, roi_image, is_num=False):
+    if ocr_reader is None: return ""
+    resultats = ocr_reader.ocr(roi_image, cls=False)
+    if resultats and resultats[0]:
+        text = " ".join([res[1][0] for res in resultats[0]])
+        if is_num:
+            text = ''.join(filter(str.isdigit, text))
+        return text.strip()
+    return ""
+
+def process_ocr(ocr_reader, rectified_card, label):
+    results = {}
+    if label not in OCR_ROIS or not OCR_AVAILABLE:
+        return results
+        
+    rois = OCR_ROIS[label]
+    h, w = rectified_card.shape[:2]
+    
+    def extract_field(field_name, roi_cfg):
+        x1, x2 = int(w * roi_cfg["x1"]), int(w * roi_cfg["x2"])
+        y1, y2 = int(h * roi_cfg["y1"]), int(h * roi_cfg["y2"])
+        roi_img = rectified_card[y1:y2, x1:x2]
+        is_num = field_name in ["DOB", "NIN"]
+        return field_name, extraire_texte_roi(ocr_reader, roi_img, is_num)
+
+    # Use ThreadPoolExecutor to run extractions in parallel
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = [executor.submit(extract_field, name, cfg) for name, cfg in rois.items()]
+        for future in futures:
+            name, text = future.result()
+            if text:
+                results[name] = text
+    return results
 
 # Load templates for classification
 def load_templates(template_dir):
@@ -151,7 +205,7 @@ def fix_orientation(warped_card, templates):
     return warped_card, False
 
 # Classify document using template matching
-def classify_document(warped_card, templates, match_threshold=0.35):
+def classify_document(warped_card, templates, match_threshold=0.50):
     if not templates:
         return "NO TEMPLATES", (128, 128, 128), 0.0, {}
     card_gray = cv2.cvtColor(warped_card, cv2.COLOR_BGR2GRAY)
@@ -211,6 +265,15 @@ def main():
         os.makedirs(output_dir)
     print("Loading templates")
     templates = load_templates(template_dir)
+    
+    ocr_reader = None
+    if OCR_AVAILABLE:
+        print("Initializing PaddleOCR...")
+        # Use arabic lang because it supports English/French + Arabic digits and text
+        ocr_reader = PaddleOCR(use_angle_cls=False, lang='arabic', show_log=False)
+        print("PaddleOCR Initialized.")
+    else:
+        print("PaddleOCR not installed. OCR disabled.")
     cap = select_camera()
     if not cap.isOpened():
         print("Error could not open camera")
@@ -230,6 +293,24 @@ def main():
     stable_color = (200, 200, 200)
     frame_count = 0
     CLASSIFY_EVERY_N = 5
+    
+    # OCR Async State
+    last_ocr_time = 0
+    ocr_results = {}
+    ocr_in_progress = False
+    ocr_executor = ThreadPoolExecutor(max_workers=1) if OCR_AVAILABLE else None
+
+    def ocr_callback(future):
+        nonlocal ocr_results, ocr_in_progress
+        try:
+            ocr_results = future.result()
+            if ocr_results:
+                print(f"[OCR] Extracted: {ocr_results}")
+        except Exception as e:
+            print(f"[OCR] Error: {e}")
+        finally:
+            ocr_in_progress = False
+
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -263,7 +344,7 @@ def main():
                 print("[ORIENT] Card was upside down -> rotated 180")
             if templates and (frame_count % CLASSIFY_EVERY_N == 0):
                 label, color, score, all_scores = classify_document(
-                    rectified_card, templates, match_threshold=0.35
+                    rectified_card, templates, match_threshold=0.50
                 )
                 classification_history.append(label)
                 if len(classification_history) > HISTORY_SIZE:
@@ -290,6 +371,27 @@ def main():
             cv2.rectangle(display_card, (0, 0), (856, 50), (0, 0, 0), -1)
             cv2.putText(display_card, stable_label, (15, 35),
                         cv2.FONT_HERSHEY_SIMPLEX, 1.0, stable_color, 2)
+            
+            # Async OCR Trigger
+            if stable_label in OCR_ROIS and OCR_AVAILABLE:
+                current_time = time.time()
+                if not ocr_in_progress and current_time - last_ocr_time > 2.0:
+                    ocr_in_progress = True
+                    last_ocr_time = current_time
+                    future = ocr_executor.submit(process_ocr, ocr_reader, rectified_card.copy(), stable_label)
+                    future.add_done_callback(ocr_callback)
+            
+            # Draw OCR Results on screen
+            if stable_label in OCR_ROIS and ocr_results:
+                y_offset = 80
+                for k, v in ocr_results.items():
+                    cv2.putText(display_card, f"{k}: {v}", (15, y_offset),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+                    y_offset += 30
+            elif stable_label in OCR_ROIS and ocr_in_progress:
+                cv2.putText(display_card, "Extracting text...", (15, 80),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2)
+
             cv2.imshow("4 Rectified Card", display_card)
             card_area = cv2.contourArea(card_contour)
             area_ratio = card_area / frame_area
@@ -304,6 +406,8 @@ def main():
             classification_history.clear()
             stable_label = "DETECTING"
             stable_color = (200, 200, 200)
+            ocr_results.clear()
+            
             placeholder = np.zeros((540, 856, 3), dtype="uint8")
             cv2.putText(placeholder, "Searching for card", (280, 270),
                         cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
