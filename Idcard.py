@@ -366,7 +366,7 @@ def main():
                         stable_label = "DETECTING"
                         stable_color = (200, 200, 200)
                 scores_str = " | ".join([f"{k}: {v:.3f}" for k, v in all_scores.items()])
-                print(f"[CLASSIFY] {label} (score: {score:.3f}) | {scores_str}")
+                # print(f"[CLASSIFY] {label} (score: {score:.3f}) | {scores_str}")
             display_card = rectified_card.copy()
             cv2.rectangle(display_card, (0, 0), (856, 50), (0, 0, 0), -1)
             cv2.putText(display_card, stable_label, (15, 35),
