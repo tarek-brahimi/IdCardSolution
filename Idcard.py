@@ -43,12 +43,24 @@ def load_templates(template_dir):
         templates["id_card"] = {
             "image": id_img,
             "gray": cv2.cvtColor(id_img, cv2.COLOR_BGR2GRAY),
-            "label": "ALGERIAN ID CARD",
+            "label": "ID CARD RECTO",
             "color": (0, 255, 0),
         }
-        print(f"  Loaded ID card template {id_img.shape[1]}x{id_img.shape[0]}")
+        print(f"  Loaded ID recto template {id_img.shape[1]}x{id_img.shape[0]}")
     else:
         print(f"  Could not load {id_path}")
+    verso_path = os.path.join(template_dir, "id_verso.png")
+    verso_img = cv2.imread(verso_path)
+    if verso_img is not None:
+        templates["id_card_verso"] = {
+            "image": verso_img,
+            "gray": cv2.cvtColor(verso_img, cv2.COLOR_BGR2GRAY),
+            "label": "ID CARD VERSO",
+            "color": (255, 255, 0),
+        }
+        print(f"  Loaded ID verso template {verso_img.shape[1]}x{verso_img.shape[0]}")
+    else:
+        print(f"  Could not load {verso_path}")
     dl_path = os.path.join(template_dir, "driver_license_dz_badge.png")
     dl_img = cv2.imread(dl_path)
     if dl_img is not None:
@@ -63,14 +75,66 @@ def load_templates(template_dir):
         print(f"  Could not load {dl_path}")
     return templates
 
+# Match one template against a region of the card
+def match_template_in_roi(card_gray, template_gray, roi_cfg):
+    card_h, card_w = card_gray.shape[:2]
+    tpl_h, tpl_w = template_gray.shape[:2]
+    y1 = int(card_h * roi_cfg["y1"])
+    y2 = int(card_h * roi_cfg["y2"])
+    x1 = int(card_w * roi_cfg["x1"])
+    x2 = int(card_w * roi_cfg["x2"])
+    roi_gray = card_gray[y1:y2, x1:x2]
+    roi_h, roi_w = roi_gray.shape[:2]
+    target_w = int(roi_w * 0.90)
+    target_h = int(roi_h * 0.90)
+    scale = min(target_w / tpl_w, target_h / tpl_h)
+    new_w = max(int(tpl_w * scale), 1)
+    new_h = max(int(tpl_h * scale), 1)
+    if new_w >= roi_w or new_h >= roi_h:
+        new_w = roi_w - 2
+        new_h = roi_h - 2
+    if new_w < 5 or new_h < 5:
+        return 0.0
+    resized_template = cv2.resize(template_gray, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    result = cv2.matchTemplate(roi_gray, resized_template, cv2.TM_CCOEFF_NORMED)
+    _, max_val, _, _ = cv2.minMaxLoc(result)
+    return max_val
+
+# Fix orientation by checking normal vs 180 rotated
+def fix_orientation(warped_card, templates):
+    roi_regions = {
+        "id_card": {"y1": 0.00, "y2": 0.40, "x1": 0.00, "x2": 0.25},
+        "id_card_verso": {"y1": 0.00, "y2": 0.40, "x1": 0.75, "x2": 1.00},
+        "driver_license": {"y1": 0.00, "y2": 0.25, "x1": 0.00, "x2": 0.15},
+    }
+    card_gray_normal = cv2.cvtColor(warped_card, cv2.COLOR_BGR2GRAY)
+    rotated_card = cv2.rotate(warped_card, cv2.ROTATE_180)
+    card_gray_rotated = cv2.cvtColor(rotated_card, cv2.COLOR_BGR2GRAY)
+    best_normal = 0.0
+    best_rotated = 0.0
+    for doc_type, tpl_data in templates.items():
+        if doc_type not in roi_regions:
+            continue
+        roi_cfg = roi_regions[doc_type]
+        template_gray = tpl_data["gray"]
+        score_normal = match_template_in_roi(card_gray_normal, template_gray, roi_cfg)
+        score_rotated = match_template_in_roi(card_gray_rotated, template_gray, roi_cfg)
+        if score_normal > best_normal:
+            best_normal = score_normal
+        if score_rotated > best_rotated:
+            best_rotated = score_rotated
+    if best_rotated > best_normal:
+        return rotated_card, True
+    return warped_card, False
+
 # Classify document using template matching
 def classify_document(warped_card, templates, match_threshold=0.45):
     if not templates:
         return "NO TEMPLATES", (128, 128, 128), 0.0, {}
-    card_h, card_w = warped_card.shape[:2]
     card_gray = cv2.cvtColor(warped_card, cv2.COLOR_BGR2GRAY)
     roi_regions = {
         "id_card": {"y1": 0.00, "y2": 0.40, "x1": 0.00, "x2": 0.25},
+        "id_card_verso": {"y1": 0.00, "y2": 0.40, "x1": 0.75, "x2": 1.00},
         "driver_license": {"y1": 0.00, "y2": 0.25, "x1": 0.00, "x2": 0.15},
     }
     all_scores = {}
@@ -81,27 +145,7 @@ def classify_document(warped_card, templates, match_threshold=0.45):
             continue
         roi_cfg = roi_regions[doc_type]
         template_gray = tpl_data["gray"]
-        tpl_h, tpl_w = template_gray.shape[:2]
-        y1 = int(card_h * roi_cfg["y1"])
-        y2 = int(card_h * roi_cfg["y2"])
-        x1 = int(card_w * roi_cfg["x1"])
-        x2 = int(card_w * roi_cfg["x2"])
-        roi_gray = card_gray[y1:y2, x1:x2]
-        roi_h, roi_w = roi_gray.shape[:2]
-        target_w = int(roi_w * 0.90)
-        target_h = int(roi_h * 0.90)
-        scale = min(target_w / tpl_w, target_h / tpl_h)
-        new_w = max(int(tpl_w * scale), 1)
-        new_h = max(int(tpl_h * scale), 1)
-        if new_w >= roi_w or new_h >= roi_h:
-            new_w = roi_w - 2
-            new_h = roi_h - 2
-        if new_w < 5 or new_h < 5:
-            all_scores[doc_type] = 0.0
-            continue
-        resized_template = cv2.resize(template_gray, (new_w, new_h), interpolation=cv2.INTER_AREA)
-        result = cv2.matchTemplate(roi_gray, resized_template, cv2.TM_CCOEFF_NORMED)
-        _, max_val, _, _ = cv2.minMaxLoc(result)
+        max_val = match_template_in_roi(card_gray, template_gray, roi_cfg)
         all_scores[doc_type] = round(max_val, 3)
         if max_val > best_score:
             best_score = max_val
@@ -186,7 +230,10 @@ def main():
             cv2.drawContours(contour_frame, [card_contour], -1, (0, 255, 0), 3)
             for pt in pts:
                 cv2.circle(contour_frame, tuple(pt), 7, (255, 0, 0), -1)
-            rectified_card = get_perspective_transform(frame, pts, width=856, height=540)
+            warped = get_perspective_transform(frame, pts, width=856, height=540)
+            rectified_card, was_flipped = fix_orientation(warped, templates)
+            if was_flipped:
+                print("[ORIENT] Card was upside down -> rotated 180")
             if templates and (frame_count % CLASSIFY_EVERY_N == 0):
                 label, color, score, all_scores = classify_document(
                     rectified_card, templates, match_threshold=0.45
@@ -199,8 +246,10 @@ def main():
                     most_common_label, most_common_count = counts.most_common(1)[0]
                     if most_common_count >= STABILITY_THRESHOLD:
                         stable_label = most_common_label
-                        if stable_label == "ALGERIAN ID CARD":
+                        if stable_label == "ID CARD RECTO":
                             stable_color = (0, 255, 0)
+                        elif stable_label == "ID CARD VERSO":
+                            stable_color = (255, 255, 0)
                         elif stable_label == "DRIVERS LICENSE":
                             stable_color = (255, 165, 0)
                         else:
