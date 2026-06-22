@@ -169,6 +169,15 @@ def classify_document(warped_card, templates, match_threshold=0.35):
             best_score = max_val
             best_type = doc_type
     if best_type is not None and best_score >= match_threshold:
+        if best_type == "driver_license":
+            id_recto = all_scores.get("id_card", 0)
+            id_verso = all_scores.get("id_card_verso", 0)
+            if id_recto >= match_threshold and id_recto >= best_score * 0.8:
+                best_type = "id_card"
+                best_score = id_recto
+            elif id_verso >= match_threshold and id_verso >= best_score * 0.8:
+                best_type = "id_card_verso"
+                best_score = id_verso
         label = templates[best_type]["label"]
         color = templates[best_type]["color"]
         return label, color, best_score, all_scores
