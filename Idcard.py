@@ -93,13 +93,11 @@ def process_ocr(ocr_reader, rectified_card, label):
         is_num = field_name in ["DOB", "NIN"]
         return field_name, extraire_texte_roi(ocr_reader, roi_img, is_num)
 
-    # Use ThreadPoolExecutor to run extractions in parallel
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        futures = [executor.submit(extract_field, name, cfg) for name, cfg in rois.items()]
-        for future in futures:
-            name, text = future.result()
-            if text:
-                results[name] = text
+    for name, cfg in rois.items():
+        field_name, text = extract_field(name, cfg)
+        if text:
+            results[field_name] = text
+            
     return results
 
 # Load templates for classification
