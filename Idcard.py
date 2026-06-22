@@ -49,16 +49,20 @@ def load_templates(template_dir):
         print(f"  Loaded ID recto template {id_img.shape[1]}x{id_img.shape[0]}")
     else:
         print(f"  Could not load {id_path}")
-    verso_path = os.path.join(template_dir, "id_verso.png")
+    verso_path = os.path.join(template_dir, "id_verso_seal.png")
+    if not os.path.exists(verso_path):
+        verso_path = os.path.join(template_dir, "id_verso.png")
     verso_img = cv2.imread(verso_path)
     if verso_img is not None:
+        h, w = verso_img.shape[:2]
+        seal_crop = verso_img[0:int(h * 0.65), :]
         templates["id_card_verso"] = {
-            "image": verso_img,
-            "gray": cv2.cvtColor(verso_img, cv2.COLOR_BGR2GRAY),
+            "image": seal_crop,
+            "gray": cv2.cvtColor(seal_crop, cv2.COLOR_BGR2GRAY),
             "label": "ID CARD VERSO",
             "color": (255, 255, 0),
         }
-        print(f"  Loaded ID verso template {verso_img.shape[1]}x{verso_img.shape[0]}")
+        print(f"  Loaded ID verso template {seal_crop.shape[1]}x{seal_crop.shape[0]}")
     else:
         print(f"  Could not load {verso_path}")
     dl_path = os.path.join(template_dir, "driver_license_dz_badge.png")
@@ -75,6 +79,13 @@ def load_templates(template_dir):
         print(f"  Could not load {dl_path}")
     return templates
 
+# ROI regions for each template
+ROI_REGIONS = {
+    "id_card":        {"y1": 0.00, "y2": 0.40, "x1": 0.00, "x2": 0.30},
+    "id_card_verso":  {"y1": 0.00, "y2": 0.45, "x1": 0.55, "x2": 1.00},
+    "driver_license": {"y1": 0.00, "y2": 0.30, "x1": 0.00, "x2": 0.20},
+}
+
 # Match one template against a region of the card
 def match_template_in_roi(card_gray, template_gray, roi_cfg):
     card_h, card_w = card_gray.shape[:2]
@@ -85,8 +96,8 @@ def match_template_in_roi(card_gray, template_gray, roi_cfg):
     x2 = int(card_w * roi_cfg["x2"])
     roi_gray = card_gray[y1:y2, x1:x2]
     roi_h, roi_w = roi_gray.shape[:2]
-    target_w = int(roi_w * 0.90)
-    target_h = int(roi_h * 0.90)
+    target_w = int(roi_w * 0.85)
+    target_h = int(roi_h * 0.85)
     scale = min(target_w / tpl_w, target_h / tpl_h)
     new_w = max(int(tpl_w * scale), 1)
     new_h = max(int(tpl_h * scale), 1)
@@ -100,30 +111,26 @@ def match_template_in_roi(card_gray, template_gray, roi_cfg):
     _, max_val, _, _ = cv2.minMaxLoc(result)
     return max_val
 
-# Fix orientation by checking normal vs 180 rotated
+# Fix orientation using only ID card templates
 def fix_orientation(warped_card, templates):
-    roi_regions = {
-        "id_card": {"y1": 0.00, "y2": 0.40, "x1": 0.00, "x2": 0.25},
-        "id_card_verso": {"y1": 0.00, "y2": 0.40, "x1": 0.75, "x2": 1.00},
-        "driver_license": {"y1": 0.00, "y2": 0.25, "x1": 0.00, "x2": 0.15},
-    }
-    card_gray_normal = cv2.cvtColor(warped_card, cv2.COLOR_BGR2GRAY)
+    id_templates = {k: v for k, v in templates.items() if k.startswith("id_card")}
+    if not id_templates:
+        return warped_card, False
+    card_gray = cv2.cvtColor(warped_card, cv2.COLOR_BGR2GRAY)
     rotated_card = cv2.rotate(warped_card, cv2.ROTATE_180)
-    card_gray_rotated = cv2.cvtColor(rotated_card, cv2.COLOR_BGR2GRAY)
-    best_normal = 0.0
-    best_rotated = 0.0
-    for doc_type, tpl_data in templates.items():
-        if doc_type not in roi_regions:
+    rotated_gray = cv2.cvtColor(rotated_card, cv2.COLOR_BGR2GRAY)
+    normal_best = 0.0
+    rotated_best = 0.0
+    for doc_type, tpl_data in id_templates.items():
+        if doc_type not in ROI_REGIONS:
             continue
-        roi_cfg = roi_regions[doc_type]
+        roi_cfg = ROI_REGIONS[doc_type]
         template_gray = tpl_data["gray"]
-        score_normal = match_template_in_roi(card_gray_normal, template_gray, roi_cfg)
-        score_rotated = match_template_in_roi(card_gray_rotated, template_gray, roi_cfg)
-        if score_normal > best_normal:
-            best_normal = score_normal
-        if score_rotated > best_rotated:
-            best_rotated = score_rotated
-    if best_rotated > best_normal:
+        score_n = match_template_in_roi(card_gray, template_gray, roi_cfg)
+        score_r = match_template_in_roi(rotated_gray, template_gray, roi_cfg)
+        normal_best = max(normal_best, score_n)
+        rotated_best = max(rotated_best, score_r)
+    if rotated_best > normal_best and rotated_best > 0.20:
         return rotated_card, True
     return warped_card, False
 
@@ -132,18 +139,13 @@ def classify_document(warped_card, templates, match_threshold=0.45):
     if not templates:
         return "NO TEMPLATES", (128, 128, 128), 0.0, {}
     card_gray = cv2.cvtColor(warped_card, cv2.COLOR_BGR2GRAY)
-    roi_regions = {
-        "id_card": {"y1": 0.00, "y2": 0.40, "x1": 0.00, "x2": 0.25},
-        "id_card_verso": {"y1": 0.00, "y2": 0.40, "x1": 0.75, "x2": 1.00},
-        "driver_license": {"y1": 0.00, "y2": 0.25, "x1": 0.00, "x2": 0.15},
-    }
     all_scores = {}
     best_type = None
     best_score = -1.0
     for doc_type, tpl_data in templates.items():
-        if doc_type not in roi_regions:
+        if doc_type not in ROI_REGIONS:
             continue
-        roi_cfg = roi_regions[doc_type]
+        roi_cfg = ROI_REGIONS[doc_type]
         template_gray = tpl_data["gray"]
         max_val = match_template_in_roi(card_gray, template_gray, roi_cfg)
         all_scores[doc_type] = round(max_val, 3)
@@ -232,7 +234,7 @@ def main():
                 cv2.circle(contour_frame, tuple(pt), 7, (255, 0, 0), -1)
             warped = get_perspective_transform(frame, pts, width=856, height=540)
             rectified_card, was_flipped = fix_orientation(warped, templates)
-            if was_flipped:
+            if was_flipped and (frame_count % CLASSIFY_EVERY_N == 0):
                 print("[ORIENT] Card was upside down -> rotated 180")
             if templates and (frame_count % CLASSIFY_EVERY_N == 0):
                 label, color, score, all_scores = classify_document(
