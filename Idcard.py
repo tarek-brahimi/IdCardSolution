@@ -128,17 +128,16 @@ def match_template_in_roi(card_gray, template_gray, roi_cfg):
             best_score = max_val
     return best_score
 
-# Fix orientation using only ID card templates
+# Fix orientation using all templates
 def fix_orientation(warped_card, templates):
-    id_templates = {k: v for k, v in templates.items() if k.startswith("id_card")}
-    if not id_templates:
+    if not templates:
         return warped_card, False
     card_gray = cv2.cvtColor(warped_card, cv2.COLOR_BGR2GRAY)
     rotated_card = cv2.rotate(warped_card, cv2.ROTATE_180)
     rotated_gray = cv2.cvtColor(rotated_card, cv2.COLOR_BGR2GRAY)
     normal_best = 0.0
     rotated_best = 0.0
-    for doc_type, tpl_data in id_templates.items():
+    for doc_type, tpl_data in templates.items():
         if doc_type not in ROI_REGIONS:
             continue
         roi_cfg = ROI_REGIONS[doc_type]
