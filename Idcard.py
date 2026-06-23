@@ -6,6 +6,11 @@ import threading
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
+# Disable oneDNN/MKLDNN BEFORE importing paddle/paddleocr
+# This prevents the ConvertPirAttribute2RuntimeAttribute crash on Windows
+os.environ['FLAGS_use_mkldnn'] = '0'
+os.environ['PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT'] = '0'
+
 try:
     from paddleocr import PaddleOCR
     OCR_AVAILABLE = True
@@ -303,9 +308,9 @@ def main():
     ocr_fr = None
     if OCR_AVAILABLE:
         print("Initializing PaddleOCR (Arabic model)...")
-        ocr_ar = PaddleOCR(use_textline_orientation=False, lang='ar')
+        ocr_ar = PaddleOCR(use_textline_orientation=False, lang='ar', enable_mkldnn=False)
         print("Initializing PaddleOCR (French model)...")
-        ocr_fr = PaddleOCR(use_textline_orientation=False, lang='fr')
+        ocr_fr = PaddleOCR(use_textline_orientation=False, lang='fr', enable_mkldnn=False)
         print("PaddleOCR Initialized.")
     else:
         print("PaddleOCR not installed. OCR disabled.")
