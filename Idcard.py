@@ -52,52 +52,63 @@ def is_blurry(image, threshold=60.0):
     return variance < threshold, variance
 
 # --- OCR Integration ---
+# ROIs define which region of the card to scan for each field
+# Each field also declares which script/language reader to use
 OCR_ROIS = {
-    "ID CARD RECTO": {
-        "Name_AR": {"y1": 0.10, "y2": 0.40, "x1": 0.50, "x2": 1.00},
-        "DOB":     {"y1": 0.35, "y2": 0.60, "x1": 0.50, "x2": 1.00},
-        "NIN":     {"y1": 0.65, "y2": 0.90, "x1": 0.30, "x2": 1.00},
-    },
-    "ID CARD VERSO": {
-        "Name_FR": {"y1": 0.05, "y2": 0.45, "x1": 0.00, "x2": 0.60},
-    },
-    "DRIVERS LICENSE": {
-        "Name": {"y1": 0.10, "y2": 0.40, "x1": 0.30, "x2": 1.00},
-        "DOB":  {"y1": 0.40, "y2": 0.60, "x1": 0.30, "x2": 1.00},
-        "License_Num": {"y1": 0.60, "y2": 0.90, "x1": 0.20, "x2": 1.00},
-    }
+    "ID CARD RECTO": [
+        # Arabic Full Name: right half of the card, upper portion
+        {"field": "Name_AR",  "lang": "ar", "is_num": False, "y1": 0.10, "y2": 0.42, "x1": 0.50, "x2": 1.00},
+        # NIN (National ID Number): bottom strip across the card
+        {"field": "NIN",      "lang": "ar", "is_num": True,  "y1": 0.70, "y2": 0.95, "x1": 0.20, "x2": 1.00},
+    ],
+    "ID CARD VERSO": [
+        # French Full Name: top-left block on the back of the card
+        {"field": "Name_FR",  "lang": "fr", "is_num": False, "y1": 0.05, "y2": 0.50, "x1": 0.00, "x2": 0.65},
+    ],
+    "DRIVERS LICENSE": [
+        # French Full Name: right/center block on the license
+        {"field": "Name_FR",  "lang": "fr", "is_num": False, "y1": 0.10, "y2": 0.45, "x1": 0.25, "x2": 1.00},
+        # NIN on the license
+        {"field": "NIN",      "lang": "ar", "is_num": True,  "y1": 0.65, "y2": 0.95, "x1": 0.20, "x2": 1.00},
+    ],
 }
 
 def extraire_texte_roi(ocr_reader, roi_image, is_num=False):
-    if ocr_reader is None: return ""
-    resultats = ocr_reader.ocr(roi_image, cls=False)
-    if resultats and resultats[0]:
-        text = " ".join([res[1][0] for res in resultats[0]])
-        if is_num:
-            text = ''.join(filter(str.isdigit, text))
-        return text.strip()
+    """Extract text from a region of interest using PaddleOCR."""
+    if ocr_reader is None or roi_image is None or roi_image.size == 0:
+        return ""
+    try:
+        resultats = ocr_reader.ocr(roi_image, cls=False)
+        if resultats and resultats[0]:
+            text = " ".join([res[1][0] for res in resultats[0]])
+            if is_num:
+                text = ''.join(filter(str.isdigit, text))
+            return text.strip()
+    except Exception as e:
+        print(f"[OCR] extraire_texte_roi error: {e}")
     return ""
 
-def process_ocr(ocr_reader, rectified_card, label):
+def process_ocr(ocr_ar, ocr_fr, rectified_card, label):
+    """Run OCR extraction for all fields belonging to the given card label."""
     results = {}
     if label not in OCR_ROIS or not OCR_AVAILABLE:
         return results
-        
-    rois = OCR_ROIS[label]
-    h, w = rectified_card.shape[:2]
-    
-    def extract_field(field_name, roi_cfg):
-        x1, x2 = int(w * roi_cfg["x1"]), int(w * roi_cfg["x2"])
-        y1, y2 = int(h * roi_cfg["y1"]), int(h * roi_cfg["y2"])
-        roi_img = rectified_card[y1:y2, x1:x2]
-        is_num = field_name in ["DOB", "NIN"]
-        return field_name, extraire_texte_roi(ocr_reader, roi_img, is_num)
 
-    for name, cfg in rois.items():
-        field_name, text = extract_field(name, cfg)
+    h, w = rectified_card.shape[:2]
+    for field_cfg in OCR_ROIS[label]:
+        field_name = field_cfg["field"]
+        lang      = field_cfg["lang"]
+        is_num    = field_cfg["is_num"]
+        x1 = int(w * field_cfg["x1"])
+        x2 = int(w * field_cfg["x2"])
+        y1 = int(h * field_cfg["y1"])
+        y2 = int(h * field_cfg["y2"])
+        roi_img = rectified_card[y1:y2, x1:x2]
+        reader = ocr_ar if lang == "ar" else ocr_fr
+        text = extraire_texte_roi(reader, roi_img, is_num)
         if text:
             results[field_name] = text
-            
+
     return results
 
 # Load templates for classification
@@ -253,7 +264,7 @@ def select_camera():
             print("Using laptop webcam")
             return cv2.VideoCapture(0)
         elif choice == "p":
-            url = "http://192.168.100.2:8080/video"
+            url = "http://10.81.173.54:8080/video"
             print(f"Connecting to {url}")
             return cv2.VideoCapture(url)
         else:
@@ -269,11 +280,13 @@ def main():
     print("Loading templates")
     templates = load_templates(template_dir)
     
-    ocr_reader = None
+    ocr_ar = None
+    ocr_fr = None
     if OCR_AVAILABLE:
-        print("Initializing PaddleOCR...")
-        # Use 'ar' lang because it supports English/French + Arabic digits and text
-        ocr_reader = PaddleOCR(use_textline_orientation=False, lang='ar')
+        print("Initializing PaddleOCR (Arabic model)...")
+        ocr_ar = PaddleOCR(use_textline_orientation=False, lang='ar')
+        print("Initializing PaddleOCR (French model)...")
+        ocr_fr = PaddleOCR(use_textline_orientation=False, lang='fr')
         print("PaddleOCR Initialized.")
     else:
         print("PaddleOCR not installed. OCR disabled.")
@@ -381,7 +394,7 @@ def main():
                 if not ocr_in_progress and current_time - last_ocr_time > 2.0:
                     ocr_in_progress = True
                     last_ocr_time = current_time
-                    future = ocr_executor.submit(process_ocr, ocr_reader, rectified_card.copy(), stable_label)
+                    future = ocr_executor.submit(process_ocr, ocr_ar, ocr_fr, rectified_card.copy(), stable_label)
                     future.add_done_callback(ocr_callback)
             
             # Draw OCR Results on screen
