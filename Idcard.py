@@ -74,13 +74,32 @@ OCR_ROIS = {
 }
 
 def extraire_texte_roi(ocr_reader, roi_image, is_num=False):
-    """Extract text from a region of interest using PaddleOCR."""
+    """Extract text from a region of interest using PaddleOCR 3.x."""
     if ocr_reader is None or roi_image is None or roi_image.size == 0:
         return ""
     try:
-        resultats = ocr_reader.ocr(roi_image, cls=False)
-        if resultats and resultats[0]:
-            text = " ".join([res[1][0] for res in resultats[0]])
+        import tempfile
+        # PaddleOCR 3.x on Windows crashes when given a numpy array due to
+        # the oneDNN backend. Saving to a temp file and passing the path works.
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            tmp_path = tmp.name
+        cv2.imwrite(tmp_path, roi_image)
+        resultats = ocr_reader.predict(tmp_path)
+        os.remove(tmp_path)
+        if resultats:
+            texts = []
+            for page in resultats:
+                # New API format: page is a dict with 'rec_texts' key
+                if isinstance(page, dict):
+                    rec = page.get('rec_texts', [])
+                    texts.extend(rec)
+                elif isinstance(page, list):
+                    for item in page:
+                        if isinstance(item, dict):
+                            texts.extend(item.get('rec_texts', []))
+                        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                            texts.append(item[1][0])  # old format fallback
+            text = " ".join(t for t in texts if t)
             if is_num:
                 text = ''.join(filter(str.isdigit, text))
             return text.strip()
