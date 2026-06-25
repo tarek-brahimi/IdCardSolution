@@ -221,6 +221,20 @@ def draw_label(frame, text, position, bg_color=(0, 180, 0), text_color=(255, 255
     cv2.rectangle(frame, (x - 5, y - th - 10), (x + tw + 10, y + baseline + 5), bg_color, -1)
     cv2.putText(frame, text, (x, y), font, scale, text_color, thickness)
 
+def _display_text(text):
+    """Fix Arabic BiDi for terminal display."""
+    if not text:
+        return text
+    if any('\u0600' <= c <= '\u06FF' or '\u0750' <= c <= '\u077F' or
+           '\uFB50' <= c <= '\uFDFF' or '\uFE70' <= c <= '\uFEFF' for c in text):
+        try:
+            from bidi.algorithm import get_display
+            import arabic_reshaper
+            return get_display(arabic_reshaper.reshape(text))
+        except ImportError:
+            return text
+    return text
+
 def print_capture_result(card_type, score, all_scores, fields, filepath, warped_card):
     print()
     print("=" * 50)
@@ -236,13 +250,13 @@ def print_capture_result(card_type, score, all_scores, fields, filepath, warped_
     if fields.nin:
         print(f"  NIN       : {fields.nin}")
     if fields.nom:
-        print(f"  Nom       : {fields.nom}")
+        print(f"  Nom       : {_display_text(fields.nom)}")
     if fields.prenom:
-        print(f"  Prenom    : {fields.prenom}")
+        print(f"  Prenom    : {_display_text(fields.prenom)}")
     if fields.date_naissance:
         print(f"  Date      : {fields.date_naissance}")
     if fields.lieu_naissance:
-        print(f"  Lieu      : {fields.lieu_naissance}")
+        print(f"  Lieu      : {_display_text(fields.lieu_naissance)}")
     print(f"  Sauvegarde: {filepath}")
     print("=" * 50)
 

@@ -167,6 +167,20 @@ class CardOCR:
                 output.append((bbox, texts[i], float(scores[i])))
         return output
 
+    @staticmethod
+    def fix_arabic_display(text):
+        """Reorder Arabic text from visual (reversed) to logical reading order for display."""
+        if not any('\u0600' <= c <= '\u06FF' or '\u0750' <= c <= '\u077F' or
+                   '\uFB50' <= c <= '\uFDFF' or '\uFE70' <= c <= '\uFEFF' for c in text):
+            return text
+        try:
+            from bidi.algorithm import get_display
+            import arabic_reshaper
+            reshaped = arabic_reshaper.reshape(text)
+            return get_display(reshaped)
+        except ImportError:
+            return text
+
     def extract(self, image: np.ndarray) -> ExtractedFields:
         """
         Extract text from an ID card image using two OCR passes
@@ -442,6 +456,7 @@ class CardOCR:
         # Ex: "اللقب: طهني" lu comme 1 bloc → 2 blocs séparés
         expanded_blocks = []
         label_value_patterns = [
+            # Arabic patterns
             r'(اللقب)\s*[:\u061A\u061B]?\s*(.+)',
             r'(للقب)\s*[:\u061A\u061B]?\s*(.+)',
             r'(الاسم)\s*[:\u061A\u061B]?\s*(.+)',
@@ -451,6 +466,13 @@ class CardOCR:
             r'(تاريخ الميلاد)\s*[:\u061A\u061B]?\s*(.+)',
             r'(تاريخ الإستخراج)\s*[:\u061A\u061B]?\s*(.+)',
             r'(تاريخ الانتهاء)\s*[:\u061A\u061B]?\s*(.+)',
+            # French patterns (permis de conduire)
+            r'(NOM)\s*:?\s*(.+)',
+            r'(PRENOM[S]?)\s*:?\s*(.+)',
+            r'(DATE DE NAISSANCE)\s*:?\s*(.+)',
+            r'(LIEU DE NAISSANCE)\s*:?\s*(.+)',
+            r'(DATE.*EXPIRATION)\s*:?\s*(.+)',
+            r'(N\.\?PERMIS)\s*:?\s*(.+)',
         ]
         for block in blocks:
             text = block["text"]
@@ -639,14 +661,15 @@ if __name__ == "__main__":
             print("\n=== AVANT allowlist (raw predict) ===")
             raw_results = _default_reader._run_ocr(reader, rgb)
             for (bbox, text, conf) in raw_results:
-                print(f"  [{conf:.2f}] {text}")
+                display_text = CardOCR.fix_arabic_display(text)
+                print(f"  [{conf:.2f}] {display_text}")
 
             print("\n=== APRÈS allowlist (refined fields) ===")
             print(f"  NIN              : {fields.nin}")
-            print(f"  Nom              : {fields.nom}")
-            print(f"  Prénom           : {fields.prenom}")
+            print(f"  Nom              : {CardOCR.fix_arabic_display(fields.nom) if fields.nom else fields.nom}")
+            print(f"  Prénom           : {CardOCR.fix_arabic_display(fields.prenom) if fields.prenom else fields.prenom}")
             print(f"  Date naissance   : {fields.date_naissance}")
-            print(f"  Lieu naissance   : {fields.lieu_naissance}")
+            print(f"  Lieu naissance   : {CardOCR.fix_arabic_display(fields.lieu_naissance) if fields.lieu_naissance else fields.lieu_naissance}")
             print(f"  Confiance        : {fields.confidence_moyenne:.1%}")
         else:
             print(f"Cannot load: {sys.argv[1]}")
