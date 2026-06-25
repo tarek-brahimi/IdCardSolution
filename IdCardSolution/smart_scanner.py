@@ -221,8 +221,7 @@ def draw_label(frame, text, position, bg_color=(0, 180, 0), text_color=(255, 255
     cv2.rectangle(frame, (x - 5, y - th - 10), (x + tw + 10, y + baseline + 5), bg_color, -1)
     cv2.putText(frame, text, (x, y), font, scale, text_color, thickness)
 
-def print_capture_result(label, score, all_scores, fields, filepath, warped_card):
-    card_type = map_label(label)
+def print_capture_result(card_type, score, all_scores, fields, filepath, warped_card):
     print()
     print("=" * 50)
     print(f"  TYPE      : {card_type} — ", end="")
@@ -232,7 +231,6 @@ def print_capture_result(label, score, all_scores, fields, filepath, warped_card
         print("Permis de Conduire Algerien")
     else:
         print("Document Non Reconnu")
-    print(f"  Label     : {label}")
     print(f"  Confiance : {score:.0%}")
     print(f"  Scores    : {all_scores}")
     if fields.nin:
@@ -241,6 +239,10 @@ def print_capture_result(label, score, all_scores, fields, filepath, warped_card
         print(f"  Nom       : {fields.nom}")
     if fields.prenom:
         print(f"  Prenom    : {fields.prenom}")
+    if fields.date_naissance:
+        print(f"  Date      : {fields.date_naissance}")
+    if fields.lieu_naissance:
+        print(f"  Lieu      : {fields.lieu_naissance}")
     print(f"  Sauvegarde: {filepath}")
     print("=" * 50)
 
@@ -422,8 +424,8 @@ def run_live_scan(camera_url=CAMERA_DEFAULT, gpu=False, debug=False):
                         card_type = "CNI"
 
                     filepath = save_capture(current_card_image, card_type)
-                    print_capture_result(stable_label, 0.0, {}, fields, filepath, current_card_image)
-                    folder_name = get_folder_name(stable_label)
+                    print_capture_result(card_type, 0.0, {}, fields, filepath, current_card_image)
+                    folder_name = get_folder_name(card_type)
                     nom_str = fields.nom or ""
                     prenom_str = fields.prenom or ""
                     name_part = f" — {nom_str} {prenom_str}" if nom_str else ""
