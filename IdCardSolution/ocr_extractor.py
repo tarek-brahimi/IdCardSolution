@@ -20,13 +20,23 @@ if __name__ == "__main__":
         ret = subprocess.call([_VENV_PYTHON] + sys.argv)
         sys.exit(ret)
 
+# Suppress PaddlePaddle startup noise during import
+_devnull_fd = os.open(os.devnull, os.O_WRONLY)
+_old_stdout = os.dup(1)
+_old_stderr = os.dup(2)
+os.dup2(_devnull_fd, 1)
+os.dup2(_devnull_fd, 2)
+os.close(_devnull_fd)
 try:
     import paddle
     import paddleocr
 except ImportError:
-    print("[ERROR] Missing dependencies. Run:")
-    print("  pip install paddlepaddle==3.2.1 paddleocr[doc-parser]>=3.6.0")
-    raise
+    raise ImportError("Missing dependencies. Run: pip install paddlepaddle==3.2.1 paddleocr[doc-parser]>=3.6.0")
+finally:
+    os.dup2(_old_stdout, 1)
+    os.dup2(_old_stderr, 2)
+    os.close(_old_stdout)
+    os.close(_old_stderr)
 
 
 os.system("chcp 65001 >nul 2>&1")
@@ -110,29 +120,39 @@ class CardOCR:
     def _init_reader(self):
         """Lazy initialization of the PaddleOCR engines."""
         if self.ocr_ar is None:
-            print("[OCR] Loading PaddleOCR Arabic model (PP-OCRv5 ar)...")
+            print("[OCR] Loading models...")
             from paddleocr import PaddleOCR, TextRecognition
-            self.ocr_ar = PaddleOCR(
-                text_detection_model_name="PP-OCRv5_mobile_det",
-                text_recognition_model_name="arabic_PP-OCRv5_mobile_rec",
-                use_doc_orientation_classify=False,
-                use_doc_unwarping=False,
-                use_textline_orientation=False,
-            )
-            self.rec_ar = TextRecognition(model_name="arabic_PP-OCRv5_mobile_rec")
-            print("[OCR] Arabic model loaded.")
-        if self.ocr_fr is None:
-            print("[OCR] Loading PaddleOCR French/English model (PP-OCRv5)...")
-            from paddleocr import PaddleOCR, TextRecognition
-            self.ocr_fr = PaddleOCR(
-                text_detection_model_name="PP-OCRv5_mobile_det",
-                text_recognition_model_name="PP-OCRv5_mobile_rec",
-                use_doc_orientation_classify=False,
-                use_doc_unwarping=False,
-                use_textline_orientation=False,
-            )
-            self.rec_fr = TextRecognition(model_name="PP-OCRv5_mobile_rec")
-            print("[OCR] French/English model loaded.")
+
+            # Suppress PaddlePaddle GLOG noise (C++ level, not Python)
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            old_stdout = os.dup(1)
+            old_stderr = os.dup(2)
+            os.dup2(devnull, 1)
+            os.dup2(devnull, 2)
+            os.close(devnull)
+            try:
+                self.ocr_ar = PaddleOCR(
+                    text_detection_model_name="PP-OCRv5_mobile_det",
+                    text_recognition_model_name="arabic_PP-OCRv5_mobile_rec",
+                    use_doc_orientation_classify=False,
+                    use_doc_unwarping=False,
+                    use_textline_orientation=False,
+                )
+                self.rec_ar = TextRecognition(model_name="arabic_PP-OCRv5_mobile_rec")
+                self.ocr_fr = PaddleOCR(
+                    text_detection_model_name="PP-OCRv5_mobile_det",
+                    text_recognition_model_name="PP-OCRv5_mobile_rec",
+                    use_doc_orientation_classify=False,
+                    use_doc_unwarping=False,
+                    use_textline_orientation=False,
+                )
+                self.rec_fr = TextRecognition(model_name="PP-OCRv5_mobile_rec")
+            finally:
+                os.dup2(old_stdout, 1)
+                os.dup2(old_stderr, 2)
+                os.close(old_stdout)
+                os.close(old_stderr)
+            print("[OCR] Models loaded.")
 
     def _run_ocr(self, ocr_engine, image):
         """Run PaddleOCR and return list of (bbox, text, confidence) compatible with EasyOCR format."""
