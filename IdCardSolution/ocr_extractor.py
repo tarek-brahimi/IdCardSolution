@@ -9,22 +9,24 @@ Responsibilities:
   4. Return a structured dictionary of extracted fields
 """
 
-import subprocess
 import sys
 import os
 
-def _ensure_package(pkg, import_name=None):
-    try:
-        __import__(import_name or pkg)
-    except ImportError:
-        print(f"[SETUP] Installing {pkg}...")
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", pkg],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
+# Auto-switch to .venv Python when run directly
+if __name__ == "__main__":
+    _VENV_PYTHON = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".venv", "Scripts", "python.exe")
+    if sys.platform == "win32" and os.path.exists(_VENV_PYTHON) and sys.executable.lower() != _VENV_PYTHON.lower():
+        import subprocess
+        ret = subprocess.call([_VENV_PYTHON] + sys.argv)
+        sys.exit(ret)
 
-_ensure_package("paddlepaddle==3.2.1", "paddlepaddle")
-_ensure_package("paddleocr[doc-parser]>=3.6.0")
+try:
+    import paddle
+    import paddleocr
+except ImportError:
+    print("[ERROR] Missing dependencies. Run:")
+    print("  pip install paddlepaddle==3.2.1 paddleocr[doc-parser]>=3.6.0")
+    raise
 
 
 os.system("chcp 65001 >nul 2>&1")

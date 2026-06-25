@@ -20,6 +20,13 @@ from datetime import datetime
 from typing import Optional, Tuple
 from collections import Counter
 
+# Auto-switch to .venv Python if available and not already using it
+_VENV_PYTHON = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".venv", "Scripts", "python.exe")
+if sys.platform == "win32" and os.path.exists(_VENV_PYTHON) and sys.executable.lower() != _VENV_PYTHON.lower():
+    import subprocess
+    ret = subprocess.call([_VENV_PYTHON] + sys.argv)
+    sys.exit(ret)
+
 os.system("chcp 65001 >nul 2>&1")
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 sys.stderr.reconfigure(encoding='utf-8', errors='replace')
