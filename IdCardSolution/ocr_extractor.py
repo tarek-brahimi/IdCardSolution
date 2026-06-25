@@ -242,13 +242,18 @@ class CardOCR:
                     if roi.size > 0:
                         cleaned = extraire_texte_roi(
                             self.rec_fr, roi,
-                            allowlist='0123456789/'
+                            allowlist='0123456789/.'
                         )
                         if cleaned:
                             extracted.date_naissance = cleaned
                     break
 
         # Refine text fields: nom, prenom, lieu_naissance
+        # Known label prefixes that OCR may include in re-read
+        _label_prefixes = [
+            "اللقب", "للقب", "الاسم", "الإسم", "للاسم", "مكان الميلاد",
+            "تاريخ الميلاد", "تاريخ الإستخراج", "تاريخ الانتهاء",
+        ]
         for field_name in ["nom", "prenom", "lieu_naissance"]:
             field_value = getattr(extracted, field_name)
             if field_value:
@@ -265,6 +270,13 @@ class CardOCR:
                             rec_engine = self.rec_ar if has_arabic else self.rec_fr
                             cleaned = extraire_texte_roi(rec_engine, roi, is_num=False)
                             if cleaned:
+                                # Strip any label prefix that OCR reintroduced
+                                for prefix in _label_prefixes:
+                                    if cleaned.startswith(prefix) and len(cleaned) > len(prefix):
+                                        candidate = cleaned[len(prefix):].lstrip(' :')
+                                        if candidate:
+                                            cleaned = candidate
+                                            break
                                 setattr(extracted, field_name, cleaned)
                         break
 
@@ -316,26 +328,86 @@ class CardOCR:
         Identify name, first name, date of birth using card labels.
         Handles both Arabic and French text with bbox positioning.
         """
-        # Date of birth (common formats: DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY, YYYY.MM.DD)
-        date_match = re.search(r'\b(\d{2}[/-]\d{2}[/-]\d{4})\b', extracted.raw_text)
-        if date_match:
-            extracted.date_naissance = date_match.group(1)
-        else:
-            date_match2 = re.search(r'\b(\d{2}\.\d{2}\.\d{4})\b', extracted.raw_text)
-            if date_match2:
-                extracted.date_naissance = date_match2.group(1)
-            else:
-                date_match3 = re.search(r'\b(\d{4}\.\d{2}\.\d{2})\b', extracted.raw_text)
-                if date_match3:
-                    extracted.date_naissance = date_match3.group(1)
+        # Date of birth: find dates associated with تاريخ الميلاد label
+        # First try: find date block immediately after تاريخ الميلاد label in sorted blocks
+        date_naissance_labels = ["تاريخ الميلاد", "date de naissance", "born on"]
+        date_pattern_dmy = re.compile(r'\b(\d{2}[/-]\d{2}[/-]\d{4})\b')
+        date_pattern_dot_dmy = re.compile(r'\b(\d{2}\.\d{2}\.\d{4})\b')
+        date_pattern_dot_ymd = re.compile(r'\b(\d{4}\.\d{2}\.\d{2})\b')
+        all_date_patterns = [date_pattern_dmy, date_pattern_dot_dmy, date_pattern_dot_ymd]
 
-        # Labels to search for (Arabic + French)
+        # Build expanded_blocks first (needed here too for label detection)
+        _expanded = []
+        _label_value_pats = [
+            r'(اللقب)\s*[:\u061A\u061B]?\s*(.+)',
+            r'(الاسم)\s*[:\u061A\u061B]?\s*(.+)',
+            r'(الإسم)\s*[:\u061A\u061B]?\s*(.+)',
+            r'(مكان الميلاد)\s*[:\u061A\u061B]?\s*(.+)',
+            r'(تاريخ الميلاد)\s*[:\u061A\u061B]?\s*(.+)',
+            r'(تاريخ الإستخراج)\s*[:\u061A\u061B]?\s*(.+)',
+            r'(تاريخ الانتهاء)\s*[:\u061A\u061B]?\s*(.+)',
+            r'(للقب)\s*[:\u061A\u061B]?\s*(.+)',
+            r'(للاسم)\s*[:\u061A\u061B]?\s*(.+)',
+        ]
+        for block in blocks:
+            text = block["text"]
+            matched = False
+            for pat in _label_value_pats:
+                m = re.search(pat, text)
+                if m:
+                    _expanded.append({"text": m.group(1), "confidence": block["confidence"], "bbox": block["bbox"]})
+                    _expanded.append({"text": m.group(2), "confidence": block["confidence"], "bbox": block["bbox"]})
+                    matched = True
+                    break
+            if not matched:
+                _expanded.append(block)
+
+        _sorted = sorted(_expanded, key=lambda b: b["bbox"][0][1])
+
+        date_found = False
+        for i, block in enumerate(_sorted):
+            text_lower = block["text"].lower().strip()
+            if any(lab in text_lower for lab in date_naissance_labels):
+                for j in range(i + 1, len(_sorted)):
+                    next_text = _sorted[j]["text"].strip()
+                    for dp in all_date_patterns:
+                        dm = dp.search(next_text)
+                        if dm:
+                            extracted.date_naissance = dm.group(1)
+                            date_found = True
+                            break
+                    if date_found:
+                        break
+                    # Stop if we hit another label (don't cross into expiry date)
+                    if any(lab in next_text.lower() for lab in ["تاريخ", "date"]):
+                        break
+                break
+
+        # Fallback: pick earliest YYYY.MM.DD date (birth dates are chronologically earliest)
+        if not date_found:
+            ymd_dates = []
+            for block in blocks:
+                dm = date_pattern_dot_ymd.search(block["text"])
+                if dm:
+                    ymd_dates.append(dm.group(1))
+            if ymd_dates:
+                ymd_dates.sort()
+                extracted.date_naissance = ymd_dates[0]
+            else:
+                # Last resort: first date found in raw text
+                for dp in all_date_patterns:
+                    dm = dp.search(extracted.raw_text)
+                    if dm:
+                        extracted.date_naissance = dm.group(1)
+                        break
+
+        # Labels to search for (Arabic + French + OCR misread variants)
         nom_labels = [
-            "اللقب", "اسم العائلة", "الاسم العائلي", "nom", "surname",
+            "اللقب", "للقب", "اسم العائلة", "الاسم العائلي", "nom", "surname",
             "nom de famille", "family name", "اللقب:", "اللقب :"
         ]
         prenom_labels = [
-            "الاسم", "الإسم", "الاسم الشخصي", "prenom", "prénom", "first name",
+            "الاسم", "الإسم", "للاسم", "الاسم الشخصي", "prenom", "prénom", "first name",
             "prénoms", "الاسم الأول", "الاسم:", "الاسم :", "الإسم:", "الإسم :"
         ]
         lieu_labels = [
@@ -349,7 +421,9 @@ class CardOCR:
         expanded_blocks = []
         label_value_patterns = [
             r'(اللقب)\s*[:\u061A\u061B]?\s*(.+)',
+            r'(للقب)\s*[:\u061A\u061B]?\s*(.+)',
             r'(الاسم)\s*[:\u061A\u061B]?\s*(.+)',
+            r'(للاسم)\s*[:\u061A\u061B]?\s*(.+)',
             r'(الإسم)\s*[:\u061A\u061B]?\s*(.+)',
             r'(مكان الميلاد)\s*[:\u061A\u061B]?\s*(.+)',
             r'(تاريخ الميلاد)\s*[:\u061A\u061B]?\s*(.+)',
