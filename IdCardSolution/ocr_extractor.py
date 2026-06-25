@@ -55,6 +55,14 @@ class ExtractedFields:
     confidence_moyenne: float = 0.0
 
 
+def extraire_texte_roi(ocr_reader, roi_image, is_num=False, allowlist=None):
+    if allowlist is None:
+        allowlist = '0123456789' if is_num else 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz '
+    resultats = ocr_reader.readtext(roi_image, allowlist=allowlist)
+    if resultats:
+        return resultats[0][1]
+    return ""
+
 
 LABELS_FR = {
     "nom": ["nom", "surname", "nom de famille", "family name"],
@@ -161,6 +169,62 @@ class CardOCR:
 
         extracted.nin = self._find_nin(raw_text, blocks)
         self._find_identity_fields(extracted, blocks)
+
+        # --- Allowlist refinement pass ---
+        # Re-read each detected field's bbox region with the correct allowlist
+        # to fix OCR errors like 0/O, 1/l, 8/B
+        if extracted.nin:
+            for block in blocks:
+                block_cleaned = re.sub(r'\s+', '', block["text"])
+                if extracted.nin in block_cleaned or re.search(r'\d{10,}', block_cleaned):
+                    bbox = block["bbox"]
+                    x1 = int(min(p[0] for p in bbox))
+                    y1 = int(min(p[1] for p in bbox))
+                    x2 = int(max(p[0] for p in bbox))
+                    y2 = int(max(p[1] for p in bbox))
+                    roi = rgb_image[y1:y2, x1:x2]
+                    if roi.size > 0:
+                        cleaned = extraire_texte_roi(self.reader_fr, roi, allowlist='0123456789')
+                        if cleaned and len(cleaned) >= 16:
+                            extracted.nin = cleaned[:18]
+                    break
+
+        # Refine date: re-read with digits + slash allowlist
+        if extracted.date_naissance:
+            for block in blocks:
+                if extracted.date_naissance in block["text"]:
+                    bbox = block["bbox"]
+                    x1 = int(min(p[0] for p in bbox))
+                    y1 = int(min(p[1] for p in bbox))
+                    x2 = int(max(p[0] for p in bbox))
+                    y2 = int(max(p[1] for p in bbox))
+                    roi = rgb_image[y1:y2, x1:x2]
+                    if roi.size > 0:
+                        cleaned = extraire_texte_roi(
+                            self.reader_fr, roi,
+                            allowlist='0123456789/'
+                        )
+                        if cleaned:
+                            extracted.date_naissance = cleaned
+                    break
+
+        # Refine text fields: nom, prenom, lieu_naissance
+        for field_name in ["nom", "prenom", "lieu_naissance"]:
+            field_value = getattr(extracted, field_name)
+            if field_value:
+                for block in blocks:
+                    if field_value.lower() in block["text"].lower():
+                        bbox = block["bbox"]
+                        x1 = int(min(p[0] for p in bbox))
+                        y1 = int(min(p[1] for p in bbox))
+                        x2 = int(max(p[0] for p in bbox))
+                        y2 = int(max(p[1] for p in bbox))
+                        roi = rgb_image[y1:y2, x1:x2]
+                        if roi.size > 0:
+                            cleaned = extraire_texte_roi(self.reader_fr, roi, is_num=False)
+                            if cleaned:
+                                setattr(extracted, field_name, cleaned)
+                        break
 
         return extracted
 
@@ -349,23 +413,31 @@ def extract_fields(image: np.ndarray, gpu: bool = False) -> ExtractedFields:
     return _default_reader.extract(image)
 
 
-# ─────────────────────────────────────────────
-# Quick test
-# ─────────────────────────────────────────────
+
 if __name__ == "__main__":
     import sys
     if len(sys.argv) > 1:
         import cv2
+        from cv2 import cvtColor, COLOR_BGR2RGB
         img = cv2.imread(sys.argv[1])
         if img is not None:
             fields = extract_fields(img)
-            print(f"\n=== OCR Result ===")
-            print(f"Raw text  : {fields.raw_text[:200]}...")
-            print(f"NIN       : {fields.nin}")
-            print(f"Name      : {fields.nom}")
-            print(f"First name: {fields.prenom}")
-            print(f"DOB       : {fields.date_naissance}")
-            print(f"Confidence: {fields.confidence_moyenne:.1%}")
+
+            # Show raw OCR text for comparison
+            rgb = cvtColor(img, COLOR_BGR2RGB)
+            reader = _default_reader.reader_fr
+            print("\n=== AVANT allowlist (raw readtext) ===")
+            raw_results = reader.readtext(rgb)
+            for (bbox, text, conf) in raw_results:
+                print(f"  [{conf:.2f}] {text}")
+
+            print("\n=== APRÈS allowlist (refined fields) ===")
+            print(f"  NIN              : {fields.nin}")
+            print(f"  Nom              : {fields.nom}")
+            print(f"  Prénom           : {fields.prenom}")
+            print(f"  Date naissance   : {fields.date_naissance}")
+            print(f"  Lieu naissance   : {fields.lieu_naissance}")
+            print(f"  Confiance        : {fields.confidence_moyenne:.1%}")
         else:
             print(f"Cannot load: {sys.argv[1]}")
     else:

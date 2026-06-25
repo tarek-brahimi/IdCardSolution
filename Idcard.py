@@ -196,7 +196,7 @@ def select_camera():
             print("Using laptop webcam")
             return cv2.VideoCapture(0)
         elif choice == "p":
-            url = "http://192.168.100.2:8080/video"
+            url = "http://192.168.100.9:4747/video"
             print(f"Connecting to {url}")
             return cv2.VideoCapture(url)
         else:
