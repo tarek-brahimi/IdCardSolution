@@ -1,5 +1,4 @@
 opencv-python>=4.8.0
-easyocr>=1.7.0
-torch>=2.0.0
-torchvision>=0.15.0
+paddlepaddle==3.2.1
+paddleocr[doc-parser]>=3.6.0
 numpy>=1.24.0

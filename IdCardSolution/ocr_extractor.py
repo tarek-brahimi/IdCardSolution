@@ -1,9 +1,9 @@
 """
-Text extraction module using EasyOCR.
-Dependency: easyocr (+ torch/torchvision)
+Text extraction module using PaddleOCR.
+Dependency: paddlepaddle-gpu + paddleocr[doc-parser]
 
 Responsibilities:
-  1. Initialize OCR reader (French + English for Algerian IDs)
+  1. Initialize OCR reader (Arabic + French for Algerian IDs)
   2. Extract all text from the card image
   3. Identify specific fields: NIN, name, first name, date of birth
   4. Return a structured dictionary of extracted fields
@@ -23,9 +23,8 @@ def _ensure_package(pkg, import_name=None):
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
 
-_ensure_package("torch")
-_ensure_package("torchvision")
-_ensure_package("easyocr")
+_ensure_package("paddlepaddle==3.2.1", "paddlepaddle")
+_ensure_package("paddleocr[doc-parser]>=3.6.0")
 
 
 os.system("chcp 65001 >nul 2>&1")
@@ -35,7 +34,6 @@ except Exception:
     pass
 
 import re
-import easyocr
 import numpy as np
 from typing import Dict, List, Optional
 from dataclasses import dataclass, field
@@ -55,13 +53,20 @@ class ExtractedFields:
     confidence_moyenne: float = 0.0
 
 
-def extraire_texte_roi(ocr_reader, roi_image, is_num=False, allowlist=None):
+def extraire_texte_roi(paddle_engine, roi_image, is_num=False, allowlist=None):
     if allowlist is None:
-        allowlist = '0123456789' if is_num else 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz '
-    resultats = ocr_reader.readtext(roi_image, allowlist=allowlist)
-    if resultats:
-        return resultats[0][1]
-    return ""
+        if is_num:
+            allowlist = '0123456789'
+        else:
+            arabic = ''.join(chr(c) for c in range(0x0600, 0x0700))
+            allowlist = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz ' + arabic
+    result = paddle_engine.predict(roi_image)
+    text = ""
+    for res in result:
+        text = res['rec_text']
+        break
+    text = ''.join(c for c in text if c in allowlist)
+    return text
 
 
 LABELS_FR = {
@@ -86,28 +91,59 @@ class CardOCR:
     """
     Extracts and structures text from an Algerian ID card.
 
-    EasyOCR usage:
-      - easyocr.Reader(['fr', 'en']) : initialize reader
-      - reader.readtext(image) : run OCR on image
-      - Each result = (bbox, text, confidence)
+    PaddleOCR usage:
+      - PaddleOCR(lang='ar') : Arabic reader (detection + recognition)
+      - PaddleOCR()          : French/English reader
+      - TextRecognition()    : ROI refinement engine
     """
 
     def __init__(self, languages: List[str] = None, gpu: bool = False):
         self.languages = languages or ['ar', 'en']
         self.gpu = gpu
-        self.reader_ar = None
-        self.reader_fr = None
+        self.ocr_ar = None
+        self.ocr_fr = None
+        self.rec_ar = None
+        self.rec_fr = None
 
     def _init_reader(self):
-        """Lazy initialization of the EasyOCR readers."""
-        if self.reader_ar is None:
-            print("[OCR] Loading EasyOCR Arabic model (ar, en)...")
-            self.reader_ar = easyocr.Reader(['ar', 'en'], gpu=self.gpu)
+        """Lazy initialization of the PaddleOCR engines."""
+        if self.ocr_ar is None:
+            print("[OCR] Loading PaddleOCR Arabic model (PP-OCRv5 ar)...")
+            from paddleocr import PaddleOCR, TextRecognition
+            self.ocr_ar = PaddleOCR(
+                text_detection_model_name="PP-OCRv5_mobile_det",
+                text_recognition_model_name="arabic_PP-OCRv5_mobile_rec",
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                use_textline_orientation=False,
+            )
+            self.rec_ar = TextRecognition(model_name="arabic_PP-OCRv5_mobile_rec")
             print("[OCR] Arabic model loaded.")
-        if self.reader_fr is None:
-            print("[OCR] Loading EasyOCR French model (fr, en)...")
-            self.reader_fr = easyocr.Reader(['fr', 'en'], gpu=self.gpu)
-            print("[OCR] French model loaded.")
+        if self.ocr_fr is None:
+            print("[OCR] Loading PaddleOCR French/English model (PP-OCRv5)...")
+            from paddleocr import PaddleOCR, TextRecognition
+            self.ocr_fr = PaddleOCR(
+                text_detection_model_name="PP-OCRv5_mobile_det",
+                text_recognition_model_name="PP-OCRv5_mobile_rec",
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                use_textline_orientation=False,
+            )
+            self.rec_fr = TextRecognition(model_name="PP-OCRv5_mobile_rec")
+            print("[OCR] French/English model loaded.")
+
+    def _run_ocr(self, ocr_engine, image):
+        """Run PaddleOCR and return list of (bbox, text, confidence) compatible with EasyOCR format."""
+        results = ocr_engine.predict(image)
+        output = []
+        for res in results:
+            polys = res['dt_polys']
+            texts = res['rec_texts']
+            scores = res['rec_scores']
+            for i in range(len(texts)):
+                bbox = polys[i].tolist()
+                output.append((bbox, texts[i], float(scores[i])))
+        return output
 
     def extract(self, image: np.ndarray) -> ExtractedFields:
         """
@@ -120,24 +156,28 @@ class CardOCR:
         rgb_image = cvtColor(image, COLOR_BGR2RGB)
 
         print("[OCR] Extracting text (Arabic pass)...")
-        results_ar = self.reader_ar.readtext(rgb_image)
+        results_ar = self._run_ocr(self.ocr_ar, rgb_image)
         print("[OCR] Extracting text (French pass)...")
-        results_fr = self.reader_fr.readtext(rgb_image)
+        results_fr = self._run_ocr(self.ocr_fr, rgb_image)
 
         # Merge results, deduplicate by bbox proximity
+        # When two blocks overlap, prefer: more digits, then higher confidence
         all_results = []
         seen_centers = []
 
         for (bbox, text, confidence) in results_ar + results_fr:
-            # Compute center of bbox
             cx = sum(p[0] for p in bbox) / 4
             cy = sum(p[1] for p in bbox) / 4
 
-            # Check if similar center already exists
             is_dup = False
-            for (sx, sy) in seen_centers:
+            for idx, (sx, sy) in enumerate(seen_centers):
                 if abs(cx - sx) < 30 and abs(cy - sy) < 30:
                     is_dup = True
+                    existing = all_results[idx]
+                    existing_digits = sum(c.isdigit() for c in existing[1])
+                    new_digits = sum(c.isdigit() for c in text)
+                    if new_digits > existing_digits or (new_digits == existing_digits and confidence > existing[2]):
+                        all_results[idx] = (bbox, text, confidence)
                     break
 
             if not is_dup:
@@ -184,7 +224,7 @@ class CardOCR:
                     y2 = int(max(p[1] for p in bbox))
                     roi = rgb_image[y1:y2, x1:x2]
                     if roi.size > 0:
-                        cleaned = extraire_texte_roi(self.reader_fr, roi, allowlist='0123456789')
+                        cleaned = extraire_texte_roi(self.rec_fr, roi, allowlist='0123456789')
                         if cleaned and len(cleaned) >= 16:
                             extracted.nin = cleaned[:18]
                     break
@@ -201,7 +241,7 @@ class CardOCR:
                     roi = rgb_image[y1:y2, x1:x2]
                     if roi.size > 0:
                         cleaned = extraire_texte_roi(
-                            self.reader_fr, roi,
+                            self.rec_fr, roi,
                             allowlist='0123456789/'
                         )
                         if cleaned:
@@ -221,7 +261,9 @@ class CardOCR:
                         y2 = int(max(p[1] for p in bbox))
                         roi = rgb_image[y1:y2, x1:x2]
                         if roi.size > 0:
-                            cleaned = extraire_texte_roi(self.reader_fr, roi, is_num=False)
+                            has_arabic = any('\u0600' <= c <= '\u06FF' for c in field_value)
+                            rec_engine = self.rec_ar if has_arabic else self.rec_fr
+                            cleaned = extraire_texte_roi(rec_engine, roi, is_num=False)
                             if cleaned:
                                 setattr(extracted, field_name, cleaned)
                         break
@@ -274,7 +316,7 @@ class CardOCR:
         Identify name, first name, date of birth using card labels.
         Handles both Arabic and French text with bbox positioning.
         """
-        # Date of birth (common formats: DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY)
+        # Date of birth (common formats: DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY, YYYY.MM.DD)
         date_match = re.search(r'\b(\d{2}[/-]\d{2}[/-]\d{4})\b', extracted.raw_text)
         if date_match:
             extracted.date_naissance = date_match.group(1)
@@ -282,23 +324,53 @@ class CardOCR:
             date_match2 = re.search(r'\b(\d{2}\.\d{2}\.\d{4})\b', extracted.raw_text)
             if date_match2:
                 extracted.date_naissance = date_match2.group(1)
+            else:
+                date_match3 = re.search(r'\b(\d{4}\.\d{2}\.\d{2})\b', extracted.raw_text)
+                if date_match3:
+                    extracted.date_naissance = date_match3.group(1)
 
         # Labels to search for (Arabic + French)
         nom_labels = [
             "اللقب", "اسم العائلة", "الاسم العائلي", "nom", "surname",
-            "nom de famille", "family name"
+            "nom de famille", "family name", "اللقب:", "اللقب :"
         ]
         prenom_labels = [
-            "الاسم", "الاسم الشخصي", "prenom", "prénom", "first name",
-            "prénoms", "الاسم الأول"
+            "الاسم", "الإسم", "الاسم الشخصي", "prenom", "prénom", "first name",
+            "prénoms", "الاسم الأول", "الاسم:", "الاسم :", "الإسم:", "الإسم :"
         ]
         lieu_labels = [
-            "مكان الميلاد", "محل الميلاد", "بلدية الميلاد", "lieu de naissance",
-            "lieu naissance", "born in", "birth place", "né à"
+            "مكان الميلاد", "محل الميلاد", "بلدية الميلاد", " lieu de naissance",
+            "lieu naissance", "born in", "birth place", "né à",
+            "مكان الميلاد:", "مكان الميلاد :"
         ]
 
+        # Passe 1: Séparer les blocs "label: valeur" fusionnés par OCR arabe
+        # Ex: "اللقب: طهني" lu comme 1 bloc → 2 blocs séparés
+        expanded_blocks = []
+        label_value_patterns = [
+            r'(اللقب)\s*[:\u061A\u061B]?\s*(.+)',
+            r'(الاسم)\s*[:\u061A\u061B]?\s*(.+)',
+            r'(الإسم)\s*[:\u061A\u061B]?\s*(.+)',
+            r'(مكان الميلاد)\s*[:\u061A\u061B]?\s*(.+)',
+            r'(تاريخ الميلاد)\s*[:\u061A\u061B]?\s*(.+)',
+            r'(تاريخ الإستخراج)\s*[:\u061A\u061B]?\s*(.+)',
+            r'(تاريخ الانتهاء)\s*[:\u061A\u061B]?\s*(.+)',
+        ]
+        for block in blocks:
+            text = block["text"]
+            matched = False
+            for pattern in label_value_patterns:
+                m = re.search(pattern, text)
+                if m:
+                    expanded_blocks.append({"text": m.group(1), "confidence": block["confidence"], "bbox": block["bbox"]})
+                    expanded_blocks.append({"text": m.group(2), "confidence": block["confidence"], "bbox": block["bbox"]})
+                    matched = True
+                    break
+            if not matched:
+                expanded_blocks.append(block)
+
         # Sort blocks by y-position (top to bottom)
-        sorted_blocks = sorted(blocks, key=lambda b: b["bbox"][0][1])
+        sorted_blocks = sorted(expanded_blocks, key=lambda b: b["bbox"][0][1])
 
         for i, block in enumerate(sorted_blocks):
             text = block["text"].strip()
@@ -336,6 +408,45 @@ class CardOCR:
                         extracted.lieu_naissance = next_text
                         break
 
+        # Position-based fallback: find nom/prenom below NIN on right side
+        # On CNI cards, اللقب and الاسم are always below the NIN on the right
+        if extracted.nom is None and extracted.prenom is None:
+            nin_bbox = None
+            for block in blocks:
+                cleaned = re.sub(r'\s+', '', block["text"])
+                if re.search(r'\d{10,}', cleaned):
+                    nin_bbox = block["bbox"]
+                    break
+
+            if nin_bbox is not None:
+                nin_bottom = max(p[1] for p in nin_bbox)
+                nin_left = min(p[0] for p in nin_bbox)
+
+                below_blocks = []
+                for block in expanded_blocks:
+                    text = block["text"].strip()
+                    bbox = block["bbox"]
+                    block_top = min(p[1] for p in bbox)
+
+                    if (block_top > nin_bottom
+                        and block_top - nin_bottom < 200
+                        and len(text) >= 2 and len(text) <= 25
+                        and any('\u0600' <= c <= '\u06FF' for c in text)
+                        and not re.search(r'\d', text)):
+                        is_label = any(kw in text for kw in [
+                            "اللقب", "الاسم", "رقم", "تاريخ", "مكان",
+                            "التعريف", "الوطني", "الوطنية", "الرقم",
+                            "بطاقة", "الميلاد", "الاستخراج", "الانتهاء",
+                        ])
+                        if not is_label:
+                            below_blocks.append(block)
+
+                if len(below_blocks) >= 2:
+                    extracted.nom = below_blocks[0]["text"].strip()
+                    extracted.prenom = below_blocks[1]["text"].strip()
+                elif len(below_blocks) == 1:
+                    extracted.nom = below_blocks[0]["text"].strip()
+
         # Fallback: if no name found, use text blocks without digits
         if extracted.nom is None and extracted.prenom is None:
             # Common non-name words to skip
@@ -345,6 +456,11 @@ class CardOCR:
                 "république", "algérienne", "démocratique", "populaire",
                 "permis", "conduire", "valide", "card", "identity",
                 "national", "algerie", "dz", "number",
+                # En-tête CNI arabe
+                "بطاقة", "التعريف", "الوطني", "الوطنية", "الرقم",
+                "تاريخ", "مكان", "الميلاد", "الاستخراج", "الانتهاء",
+                "الإستخراج", "الأكثر", "استعمال", "المستعمل",
+                "الجنس", "ال blood", "الفئة",
             ]
 
             def is_clean_name(text):
@@ -363,8 +479,6 @@ class CardOCR:
                 has_arabic = any('\u0600' <= c <= '\u06FF' for c in t)
                 # Accept pure Latin names (like BRAHIMI, ABDELNASSER)
                 if has_latin and not has_arabic:
-                    # Real names are ALL UPPERCASE or all lowercase
-                    # Mixed case within words = garbled OCR
                     words = t.split()
                     for w in words:
                         if len(w) > 2:
@@ -425,9 +539,9 @@ if __name__ == "__main__":
 
             # Show raw OCR text for comparison
             rgb = cvtColor(img, COLOR_BGR2RGB)
-            reader = _default_reader.reader_fr
-            print("\n=== AVANT allowlist (raw readtext) ===")
-            raw_results = reader.readtext(rgb)
+            reader = _default_reader.ocr_fr
+            print("\n=== AVANT allowlist (raw predict) ===")
+            raw_results = _default_reader._run_ocr(reader, rgb)
             for (bbox, text, conf) in raw_results:
                 print(f"  [{conf:.2f}] {text}")
 

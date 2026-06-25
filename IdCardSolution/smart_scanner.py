@@ -9,7 +9,7 @@ Detection identique a oh.py :
 Usage :
   python smart_scanner.py                     # DroidCam
   python smart_scanner.py --camera 0          # Webcam locale
-  python smart_scanner.py --gpu               # GPU pour EasyOCR
+  python smart_scanner.py --gpu               # GPU pour PaddleOCR
 """
 
 import sys
@@ -356,18 +356,20 @@ def run_live_scan(camera_url=CAMERA_DEFAULT, gpu=False, debug=False):
                 # Stocker pour capture
                 current_card_image = rectified_card
 
-                # Auto-save
+                # Auto-save: trigger when card is detected, classified or not
                 card_area = cv2.contourArea(pts.reshape(-1, 1, 2))
                 area_ratio = card_area / frame_area
                 blurry, var_val = is_blurry(rectified_card)
                 now_seconds = cv2.getTickCount() / cv2.getTickFrequency()
 
-                if (stable_label in ("ALGERIAN ID CARD", "DRIVERS LICENSE")
+                if (stable_label in ("ALGERIAN ID CARD", "DRIVERS LICENSE", "DETECTING")
                     and area_ratio > AREA_RATIO_MIN
                     and not blurry
                     and (now_seconds - last_save_time) > SAVE_COOLDOWN):
 
                     card_type = map_label(stable_label)
+                    if card_type == "INCONNU":
+                        card_type = "CNI"
                     filepath = save_capture(rectified_card, card_type)
                     folder_name = get_folder_name(stable_label)
                     print(f"[AUTO-SAVE] {stable_label} -> {filepath} (area={area_ratio:.2f}, sharp={var_val:.1f})")
@@ -408,20 +410,18 @@ def run_live_scan(camera_url=CAMERA_DEFAULT, gpu=False, debug=False):
                     fields = extract_fields(current_card_image, gpu=gpu)
                     card_type = map_label(stable_label)
 
-                    if card_type != "INCONNU":
-                        filepath = save_capture(current_card_image, card_type)
-                        label_display = get_display_label(stable_label)
-                        print_capture_result(stable_label, 0.0, {}, fields, filepath, current_card_image)
-                        folder_name = get_folder_name(stable_label)
-                        nom_str = fields.nom or ""
-                        prenom_str = fields.prenom or ""
-                        name_part = f" — {nom_str} {prenom_str}" if nom_str else ""
-                        confirmation_msg = f"SAUVE: {folder_name}/{os.path.basename(filepath)}{name_part}"
-                        confirmation_expiry = now_seconds + 4.0
-                    else:
-                        print_inconnu()
-                        confirmation_msg = "Document non reconnu"
-                        confirmation_expiry = now_seconds + 3.0
+                    # Always save if card image exists, even if not classified
+                    if card_type == "INCONNU":
+                        card_type = "CNI"
+
+                    filepath = save_capture(current_card_image, card_type)
+                    print_capture_result(stable_label, 0.0, {}, fields, filepath, current_card_image)
+                    folder_name = get_folder_name(stable_label)
+                    nom_str = fields.nom or ""
+                    prenom_str = fields.prenom or ""
+                    name_part = f" — {nom_str} {prenom_str}" if nom_str else ""
+                    confirmation_msg = f"SAUVE: {folder_name}/{os.path.basename(filepath)}{name_part}"
+                    confirmation_expiry = now_seconds + 4.0
                 else:
                     print("[WARN] Aucune carte detectee, impossible de capturer.")
 
@@ -444,14 +444,14 @@ def main():
 Exemples :
   python smart_scanner.py                     # Camera WiFi DroidCam
   python smart_scanner.py --camera 0          # Webcam locale
-  python smart_scanner.py --gpu               # GPU pour EasyOCR
+  python smart_scanner.py --gpu               # GPU pour PaddleOCR
   python smart_scanner.py --debug             # Afficher le debug
         """
     )
     parser.add_argument("--camera", "-c", type=str, default=CAMERA_DEFAULT,
                         help="Index camera (0, 1) ou URL DroidCam")
     parser.add_argument("--gpu", action="store_true",
-                        help="Utiliser le GPU pour EasyOCR")
+                        help="Utiliser le GPU pour PaddleOCR")
     parser.add_argument("--debug", action="store_true",
                         help="Afficher les infos de debug")
     args = parser.parse_args()
