@@ -115,6 +115,8 @@ ARABIC_BLACKLIST_KEYWORDS: list[str] = [
     "سلطة",
     "السلطة",
     "الوطني",
+    "الإمضاء",
+    "إمضاء",
 ]
 
 FRENCH_BLACKLIST_KEYWORDS: list[str] = [

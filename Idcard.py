@@ -363,14 +363,6 @@ def main():
                 for key in ['nin', 'arabic_name', 'french_name']:
                     val = result.get(key)
                     if val:
-                        # Fix terminal display for Arabic
-                        if key == 'arabic_name':
-                            try:
-                                import arabic_reshaper
-                                from bidi.algorithm import get_display
-                                val = get_display(arabic_reshaper.reshape(val))
-                            except ImportError:
-                                pass
                         print(f"  {key.upper():<15}: {val}")
                 print("="*50 + "\n")
         except Exception as e:
