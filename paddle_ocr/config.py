@@ -56,8 +56,8 @@ ID_VERSO_ROIS: List[ROI] = [
 DRIVER_LICENSE_ROIS: List[ROI] = [
     # French full name: middle block
     ROI(field="french_name", lang="fr", y1=0.35, y2=0.80, x1=0.20, x2=1.00),
-    # Arabic full name: middle block
-    ROI(field="arabic_name", lang="ar", y1=0.25, y2=0.80, x1=0.20, x2=1.00),
+    # Arabic full name: tightly constrained to middle-right
+    ROI(field="arabic_name", lang="ar", y1=0.30, y2=0.55, x1=0.45, x2=1.00),
     # NIN
     ROI(field="nin",         lang="ar", y1=0.60, y2=0.97, x1=0.18, x2=1.00),
 ]
