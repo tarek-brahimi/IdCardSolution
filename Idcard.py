@@ -2,20 +2,26 @@ import cv2
 import numpy as np
 import os
 import time
-import threading
+import logging
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
-# Disable oneDNN/MKLDNN BEFORE importing paddle/paddleocr
-# This prevents the ConvertPirAttribute2RuntimeAttribute crash on Windows
-os.environ['FLAGS_use_mkldnn'] = '0'
-os.environ['PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT'] = '0'
-
+# ── OCR Module ──────────────────────────────────────────────────────
+# The paddle_ocr package handles all PaddleOCR internals.
+# Set OCR_AVAILABLE = False to disable OCR entirely.
 try:
-    from paddleocr import PaddleOCR
+    from paddle_ocr import OCRManager
     OCR_AVAILABLE = True
 except ImportError:
     OCR_AVAILABLE = False
+
+# ── Logging ─────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(name)-24s  %(levelname)-7s  %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger("idcard")
 
 # Order corner points
 def order_points(pts):
@@ -55,85 +61,6 @@ def is_blurry(image, threshold=60.0):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     variance = cv2.Laplacian(gray, cv2.CV_64F).var()
     return variance < threshold, variance
-
-# --- OCR Integration ---
-# ROIs define which region of the card to scan for each field
-# Each field also declares which script/language reader to use
-OCR_ROIS = {
-    "ID CARD RECTO": [
-        # Arabic Full Name: right half of the card, upper portion
-        {"field": "Name_AR",  "lang": "ar", "is_num": False, "y1": 0.10, "y2": 0.42, "x1": 0.50, "x2": 1.00},
-        # NIN (National ID Number): bottom strip across the card
-        {"field": "NIN",      "lang": "ar", "is_num": True,  "y1": 0.70, "y2": 0.95, "x1": 0.20, "x2": 1.00},
-    ],
-    "ID CARD VERSO": [
-        # French Full Name: top-left block on the back of the card
-        {"field": "Name_FR",  "lang": "fr", "is_num": False, "y1": 0.05, "y2": 0.50, "x1": 0.00, "x2": 0.65},
-    ],
-    "DRIVERS LICENSE": [
-        # French Full Name: right/center block on the license
-        {"field": "Name_FR",  "lang": "fr", "is_num": False, "y1": 0.10, "y2": 0.45, "x1": 0.25, "x2": 1.00},
-        # NIN on the license
-        {"field": "NIN",      "lang": "ar", "is_num": True,  "y1": 0.65, "y2": 0.95, "x1": 0.20, "x2": 1.00},
-    ],
-}
-
-def extraire_texte_roi(ocr_reader, roi_image, is_num=False):
-    """Extract text from a region of interest using PaddleOCR 3.x."""
-    if ocr_reader is None or roi_image is None or roi_image.size == 0:
-        return ""
-    try:
-        import tempfile
-        # PaddleOCR 3.x on Windows crashes when given a numpy array due to
-        # the oneDNN backend. Saving to a temp file and passing the path works.
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-            tmp_path = tmp.name
-        cv2.imwrite(tmp_path, roi_image)
-        resultats = ocr_reader.predict(tmp_path)
-        os.remove(tmp_path)
-        if resultats:
-            texts = []
-            for page in resultats:
-                # New API format: page is a dict with 'rec_texts' key
-                if isinstance(page, dict):
-                    rec = page.get('rec_texts', [])
-                    texts.extend(rec)
-                elif isinstance(page, list):
-                    for item in page:
-                        if isinstance(item, dict):
-                            texts.extend(item.get('rec_texts', []))
-                        elif isinstance(item, (list, tuple)) and len(item) >= 2:
-                            texts.append(item[1][0])  # old format fallback
-            text = " ".join(t for t in texts if t)
-            if is_num:
-                text = ''.join(filter(str.isdigit, text))
-            return text.strip()
-    except Exception as e:
-        print(f"[OCR] extraire_texte_roi error: {e}")
-    return ""
-
-def process_ocr(ocr_ar, ocr_fr, rectified_card, label):
-    """Run OCR extraction for all fields belonging to the given card label."""
-    results = {}
-    if label not in OCR_ROIS or not OCR_AVAILABLE:
-        return results
-
-    h, w = rectified_card.shape[:2]
-    for field_cfg in OCR_ROIS[label]:
-        field_name = field_cfg["field"]
-        lang      = field_cfg["lang"]
-        is_num    = field_cfg["is_num"]
-        x1 = int(w * field_cfg["x1"])
-        x2 = int(w * field_cfg["x2"])
-        y1 = int(h * field_cfg["y1"])
-        y2 = int(h * field_cfg["y2"])
-        roi_img = rectified_card[y1:y2, x1:x2]
-        reader = ocr_ar if lang == "ar" else ocr_fr
-        text = extraire_texte_roi(reader, roi_img, is_num)
-        if text:
-            results[field_name] = text
-
-    return results
 
 # Load templates for classification
 def load_templates(template_dir):
@@ -288,11 +215,94 @@ def select_camera():
             print("Using laptop webcam")
             return cv2.VideoCapture(0)
         elif choice == "p":
-            url = "http://10.81.173.54:8080/video"
+            url = "http://192.168.100.2:8080/video"
             print(f"Connecting to {url}")
             return cv2.VideoCapture(url)
         else:
             print("Invalid choice try again")
+
+# ── Helper: draw OCR results on the display card ────────────────────
+def put_text_arabic(img, text, org, color=(255, 255, 255), font_size=24):
+    """Draw Arabic (and Latin) text using PIL, Arabic Reshaper, and python-bidi."""
+    from PIL import Image, ImageDraw, ImageFont
+    import arabic_reshaper
+    from bidi.algorithm import get_display
+    
+    reshaped = arabic_reshaper.reshape(text)
+    bidi_text = get_display(reshaped)
+    
+    # Convert BGR to RGB for PIL, then back to BGR
+    img_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    draw = ImageDraw.Draw(img_pil)
+    
+    try:
+        # Use a standard Windows font that supports Arabic
+        font = ImageFont.truetype("arial.ttf", font_size)
+    except IOError:
+        font = ImageFont.load_default()
+        
+    # Pillow takes RGB colors, so convert the given BGR to RGB
+    rgb_color = (color[2], color[1], color[0])
+    draw.text(org, bidi_text, font=font, fill=rgb_color)
+    
+    return cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+
+
+def draw_ocr_overlay(display_card, ocr_result, ocr_in_progress, is_waiting_verso):
+    """Render OCR status / results onto the rectified-card window."""
+    y_offset = 80
+
+    if is_waiting_verso:
+        cv2.putText(display_card, "Please flip your ID card",
+                    (15, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 200, 255), 2)
+        y_offset += 35
+        # Also show what we already have from recto
+        if ocr_result:
+            for key in ("nin", "arabic_name"):
+                if key in ocr_result and ocr_result[key]:
+                    val = ocr_result[key]
+                    if "arabic" in key:
+                        # Re-assign display_card with PIL rendering
+                        display_card[:] = put_text_arabic(display_card, f"{key}: {val}", (15, y_offset), (0, 255, 255), 22)
+                    else:
+                        cv2.putText(display_card, f"{key}: {val}",
+                                    (15, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                    y_offset += 28
+        return
+
+    if ocr_in_progress:
+        cv2.putText(display_card, "Extracting text...",
+                    (15, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2)
+        return
+
+    if not ocr_result:
+        return
+
+    status = ocr_result.get("status", "")
+    if status == "unsupported_document":
+        cv2.putText(display_card, "Unsupported card",
+                    (15, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
+        return
+
+    # Draw extracted fields
+    for key in ("nin", "arabic_name", "french_name"):
+        val = ocr_result.get(key)
+        if val:
+            conf_key = f"{key}_confidence"
+            conf = ocr_result.get(conf_key, 0)
+            color = (0, 255, 0) if conf >= 0.80 else (0, 255, 255) if conf >= 0.60 else (0, 165, 255)
+            
+            if "arabic" in key:
+                display_card[:] = put_text_arabic(display_card, f"{key}: {val} ({conf:.0%})", (15, y_offset), color, 22)
+            else:
+                cv2.putText(display_card, f"{key}: {val} ({conf:.0%})",
+                            (15, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+            y_offset += 28
+
+    if ocr_result.get("completed"):
+        cv2.putText(display_card, "SCAN COMPLETE",
+                    (15, y_offset + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+
 
 # Main application loop
 def main():
@@ -303,24 +313,25 @@ def main():
         os.makedirs(output_dir)
     print("Loading templates")
     templates = load_templates(template_dir)
-    
-    ocr_ar = None
-    ocr_fr = None
+
+    # ── OCR initialisation ──────────────────────────────────────────
+    ocr_manager = None
     if OCR_AVAILABLE:
-        print("Initializing PaddleOCR (Arabic model)...")
-        ocr_ar = PaddleOCR(use_textline_orientation=False, lang='ar', enable_mkldnn=False)
-        print("Initializing PaddleOCR (French model)...")
-        ocr_fr = PaddleOCR(use_textline_orientation=False, lang='fr', enable_mkldnn=False)
-        print("PaddleOCR Initialized.")
+        print("Initialising OCR module (PaddleOCR) …")
+        ocr_manager = OCRManager(use_gpu=True)
+        print("OCR module ready.")
     else:
         print("PaddleOCR not installed. OCR disabled.")
+
     cap = select_camera()
     if not cap.isOpened():
         print("Error could not open camera")
         return
     print("")
     print("ID Card Detector Started")
+    print("E -> Extract Text")
     print("S -> Save card")
+    print("R -> Reset OCR state")
     print("Q -> Quit")
     WIN_W, WIN_H = 640, 480
     for name in ["1 Original", "2 Edges", "3 Contours", "4 Rectified Card"]:
@@ -333,21 +344,37 @@ def main():
     stable_color = (200, 200, 200)
     frame_count = 0
     CLASSIFY_EVERY_N = 5
-    
-    # OCR Async State
+
+    # ── OCR async state ─────────────────────────────────────────────
     last_ocr_time = 0
-    ocr_results = {}
+    ocr_result = {}           # latest result dict from OCRManager
     ocr_in_progress = False
-    ocr_executor = ThreadPoolExecutor(max_workers=1) if OCR_AVAILABLE else None
+    ocr_executor = ThreadPoolExecutor(max_workers=1) if ocr_manager else None
 
     def ocr_callback(future):
-        nonlocal ocr_results, ocr_in_progress
+        nonlocal ocr_result, ocr_in_progress
         try:
-            ocr_results = future.result()
-            if ocr_results:
-                print(f"[OCR] Extracted: {ocr_results}")
+            result = future.result()
+            if result:
+                ocr_result = result
+                print("\n" + "="*50)
+                print(f"   EXTRACTED DATA: {result.get('document_type', 'UNKNOWN')}")
+                print("="*50)
+                for key in ['nin', 'arabic_name', 'french_name']:
+                    val = result.get(key)
+                    if val:
+                        # Fix terminal display for Arabic
+                        if key == 'arabic_name':
+                            try:
+                                import arabic_reshaper
+                                from bidi.algorithm import get_display
+                                val = get_display(arabic_reshaper.reshape(val))
+                            except ImportError:
+                                pass
+                        print(f"  {key.upper():<15}: {val}")
+                print("="*50 + "\n")
         except Exception as e:
-            print(f"[OCR] Error: {e}")
+            logger.error("OCR error: %s", e)
         finally:
             ocr_in_progress = False
 
@@ -411,26 +438,10 @@ def main():
             cv2.rectangle(display_card, (0, 0), (856, 50), (0, 0, 0), -1)
             cv2.putText(display_card, stable_label, (15, 35),
                         cv2.FONT_HERSHEY_SIMPLEX, 1.0, stable_color, 2)
-            
-            # Async OCR Trigger
-            if stable_label in OCR_ROIS and OCR_AVAILABLE:
-                current_time = time.time()
-                if not ocr_in_progress and current_time - last_ocr_time > 2.0:
-                    ocr_in_progress = True
-                    last_ocr_time = current_time
-                    future = ocr_executor.submit(process_ocr, ocr_ar, ocr_fr, rectified_card.copy(), stable_label)
-                    future.add_done_callback(ocr_callback)
-            
-            # Draw OCR Results on screen
-            if stable_label in OCR_ROIS and ocr_results:
-                y_offset = 80
-                for k, v in ocr_results.items():
-                    cv2.putText(display_card, f"{k}: {v}", (15, y_offset),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-                    y_offset += 30
-            elif stable_label in OCR_ROIS and ocr_in_progress:
-                cv2.putText(display_card, "Extracting text...", (15, 80),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2)
+
+            # ── Draw OCR overlay ────────────────────────────────────
+            is_waiting = ocr_manager.is_waiting_for_verso if ocr_manager else False
+            draw_ocr_overlay(display_card, ocr_result, ocr_in_progress, is_waiting)
 
             cv2.imshow("4 Rectified Card", display_card)
             card_area = cv2.contourArea(card_contour)
@@ -446,8 +457,11 @@ def main():
             classification_history.clear()
             stable_label = "DETECTING"
             stable_color = (200, 200, 200)
-            ocr_results.clear()
-            
+            ocr_result = {}
+            # Reset state machine when card is lost
+            if ocr_manager:
+                ocr_manager.reset()
+
             placeholder = np.zeros((540, 856, 3), dtype="uint8")
             cv2.putText(placeholder, "Searching for card", (280, 270),
                         cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
@@ -458,6 +472,28 @@ def main():
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
             break
+        elif key == ord('e'):
+            # Manual trigger for OCR
+            if ocr_manager and stable_label != "DETECTING" and stable_label != "OTHER DOCUMENT":
+                if not ocr_in_progress:
+                    if rectified_card is not None:
+                        print(f"\n[OCR] Extracting text from {stable_label}...")
+                        ocr_in_progress = True
+                        card_copy = rectified_card.copy()
+                        future = ocr_executor.submit(
+                            ocr_manager.process, stable_label, card_copy
+                        )
+                        future.add_done_callback(ocr_callback)
+                else:
+                    print("[OCR] Extraction already in progress, please wait...")
+            else:
+                print("[OCR] No valid document detected yet. Wait for a stable classification.")
+        elif key == ord('r'):
+            # Manual reset of OCR state
+            if ocr_manager:
+                ocr_manager.reset()
+                ocr_result = {}
+                print("[OCR] State reset manually.")
         elif key == ord('s'):
             if card_contour is not None and rectified_card is not None:
                 safe_label = stable_label.lower().replace("'", "").replace(" ", "_")

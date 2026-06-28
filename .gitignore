@@ -1,0 +1,7 @@
+venv312/
+venv/
+.venv/
+__pycache__/
+*.pyc
+saved_id_cards/
+IdCardSolution/
