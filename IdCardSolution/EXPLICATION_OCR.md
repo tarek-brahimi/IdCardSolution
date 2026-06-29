@@ -90,7 +90,7 @@ Image → [1. Text Detection] → [2. Text Direction] → [3. Text Recognition] 
 ```
 
 #### Étape 1 : Text Detection (Détection de texte)
-- **Modèle** : DB-Net++ (Differentiable Binarization)
+- **Modèle** : DB-Net++ (Differentiable Binarization)   
 - **Rôle** : Trouve les zones contenant du texte dans l'image
 - **Sortie** : Polygones (coordonnées x,y des coins du texte)
 - **Fonctionnement** :

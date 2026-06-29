@@ -1,18 +1,5 @@
-"""
-Text extraction module using PaddleOCR.
-Dependency: paddlepaddle-gpu + paddleocr[doc-parser]
-
-Responsibilities:
-  1. Initialize OCR reader (Arabic + French for Algerian IDs)
-  2. Extract all text from the card image
-  3. Identify specific fields: NIN, name, first name, date of birth
-  4. Return a structured dictionary of extracted fields
-"""
-
 import sys
 import os
-
-# Auto-switch to .venv Python when run directly
 if __name__ == "__main__":
     _VENV_PYTHON = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".venv", "Scripts", "python.exe")
     if sys.platform == "win32" and os.path.exists(_VENV_PYTHON) and sys.executable.lower() != _VENV_PYTHON.lower():
@@ -37,8 +24,6 @@ finally:
     os.dup2(_old_stderr, 2)
     os.close(_old_stdout)
     os.close(_old_stderr)
-
-
 os.system("chcp 65001 >nul 2>&1")
 try:
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -128,7 +113,7 @@ class CardOCR:
             old_stdout = os.dup(1)
             old_stderr = os.dup(2)
             os.dup2(devnull, 1)
-            os.dup2(devnull, 2)
+            os.dup2(devnull, 2) 
             os.close(devnull)
             try:
                 self.ocr_ar = PaddleOCR(
@@ -628,9 +613,6 @@ class CardOCR:
                     extracted.nom = text_blocks[0]["text"].strip()
 
 
-# ─────────────────────────────────────────────
-# Convenience function
-# ─────────────────────────────────────────────
 _default_reader: Optional[CardOCR] = None
 
 

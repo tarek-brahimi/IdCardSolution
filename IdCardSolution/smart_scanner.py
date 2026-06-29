@@ -36,7 +36,7 @@ import numpy as np
 
 from ocr_extractor import extract_fields
 
-CAMERA_DEFAULT = "http://192.168.100.9:4747/video"
+CAMERA_DEFAULT = "http://10.86.207.149:4747/video"
 
 CAPTURE_DIR = "captures"
 DIR_NATIONAL_ID = os.path.join(CAPTURE_DIR, "national_id")
