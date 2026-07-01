@@ -214,12 +214,38 @@ class OCRParser:
         raw_texts: list[str] = [b.text for b in boxes]
         name_parts: list[tuple[str, float, float]] = []
 
-        for box in boxes:
-            text = _normalise(box.text)
-
-            if not text or box.confidence < NAME_CONFIDENCE_THRESHOLD:
+        # 1. Group boxes by line (center_y within ~15 pixels of each other)
+        # This handles cases where PaddleOCR detects the label and value as separate boxes on the same line.
+        lines: list[list[OCRBox]] = []
+        # Sort all boxes top-to-bottom first
+        sorted_boxes = sorted(boxes, key=lambda b: b.center_y)
+        
+        for box in sorted_boxes:
+            if box.confidence < NAME_CONFIDENCE_THRESHOLD:
                 continue
-
+                
+            # Find a matching line
+            matched = False
+            for line in lines:
+                if abs(line[0].center_y - box.center_y) < 15:
+                    line.append(box)
+                    matched = True
+                    break
+            if not matched:
+                lines.append([box])
+                
+        # 2. Process each line
+        for line in lines:
+            # Sort boxes on this line from left-to-right (ascending center_x)
+            line.sort(key=lambda b: b.center_x)
+            
+            # Since Algerian cards are RTL, the label is on the RIGHT (largest center_x)
+            # The actual name value is on the LEFT (smallest center_x).
+            # We ONLY take the left-most box! This completely drops the label box, 
+            # rendering the system immune to label hallucinations.
+            value_box = line[0]
+            
+            text = _normalise(value_box.text)
             if not _is_arabic(text):
                 continue
 
@@ -234,7 +260,7 @@ class OCRParser:
             if not text:
                 continue
 
-            # Split into individual words and filter each one
+            # We still run the word filter to catch cases where PaddleOCR merged the label and value into ONE box
             words = text.split()
             kept_words = []
             for word in words:
@@ -247,7 +273,7 @@ class OCRParser:
                 continue
 
             clean_text = " ".join(kept_words)
-            name_parts.append((clean_text, box.confidence, box.center_y))
+            name_parts.append((clean_text, value_box.confidence, value_box.center_y))
 
         if not name_parts:
             return FieldResult(
