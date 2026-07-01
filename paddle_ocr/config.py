@@ -40,8 +40,8 @@ class ROI:
 
 # --- Algerian National ID Card — Recto ---------------------------------
 ID_RECTO_ROIS: List[ROI] = [
-    # Arabic full name: right half, middle portion (below NIN, above Date/Place of birth)
-    ROI(field="arabic_name", lang="ar", y1=0.55, y2=0.83, x1=0.30, x2=1.00),
+    # Arabic full name: Tighter bounds to exclude labels on the far right (x > 0.70) and NIN label on top
+    ROI(field="arabic_name", lang="ar", y1=0.58, y2=0.80, x1=0.30, x2=0.70),
     # NIN: middle/lower
     ROI(field="nin",         lang="ar", y1=0.40, y2=0.80, x1=0.10, x2=1.00),
 ]
@@ -54,8 +54,8 @@ ID_VERSO_ROIS: List[ROI] = [
 
 # --- Algerian Driver License --------------------------------------------
 DRIVER_LICENSE_ROIS: List[ROI] = [
-    # Arabic full name: top right block
-    ROI(field="arabic_name", lang="ar", y1=0.30, y2=0.60, x1=0.50, x2=1.00),
+    # Arabic full name: exclude top headers (y < 0.40) and far right labels
+    ROI(field="arabic_name", lang="ar", y1=0.40, y2=0.55, x1=0.45, x2=0.90),
     # French full name: middle block
     ROI(field="french_name", lang="fr", y1=0.35, y2=0.80, x1=0.20, x2=1.00),
     # NIN
@@ -117,6 +117,15 @@ ARABIC_BLACKLIST_KEYWORDS: list[str] = [
     "الوطني",
     "الإمضاء",
     "إمضاء",
+    # Specific OCR hallucinations of labels
+    "الثقية",
+    "الوطلي",
+    "ررققم",
+    "كور",
+    "الااة",
+    "الاكتمار",
+    "وزارة",
+    "الداخلية",
 ]
 
 FRENCH_BLACKLIST_KEYWORDS: list[str] = [

@@ -193,15 +193,17 @@ class OCRParser:
             # e.g., "ةقاطب" becomes "بطاقة"
             text = text[::-1]
 
-            if _contains_blacklisted(text, ARABIC_BLACKLIST_KEYWORDS):
-                continue
+            # Remove blacklisted keywords instead of skipping the entire box
+            for kw in ARABIC_BLACKLIST_KEYWORDS:
+                if kw in text:
+                    text = text.replace(kw, "")
 
             # Skip single characters or strings that are just numbers/punctuation
             cleaned = re.sub(r"[^\w\s]", "", text).strip()
             if len(cleaned) < 2:
                 continue
 
-            name_parts.append((text, box.confidence, box.center_y))
+            name_parts.append((cleaned, box.confidence, box.center_y))
 
         if not name_parts:
             return FieldResult(
