@@ -57,8 +57,10 @@ class OCRExtractor:
 
         elif document_type == DOC_DRIVER_LICENSE:
             boxes_fr = self._engine.run(image, lang="fr")
-            results["nin"] = self._filter_boxes(boxes_fr, "nin", doc_rois, h, w)
+            boxes_ar = self._engine.run(image, lang="ar")
             results["french_name"] = self._filter_boxes(boxes_fr, "french_name", doc_rois, h, w)
+            results["arabic_name"] = self._filter_boxes(boxes_ar, "arabic_name", doc_rois, h, w)
+            results["nin"] = self._filter_boxes(boxes_ar, "nin", doc_rois, h, w)
 
         return results
 

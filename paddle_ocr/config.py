@@ -54,6 +54,8 @@ ID_VERSO_ROIS: List[ROI] = [
 
 # --- Algerian Driver License --------------------------------------------
 DRIVER_LICENSE_ROIS: List[ROI] = [
+    # Arabic full name: top right block
+    ROI(field="arabic_name", lang="ar", y1=0.30, y2=0.60, x1=0.50, x2=1.00),
     # French full name: middle block
     ROI(field="french_name", lang="fr", y1=0.35, y2=0.80, x1=0.20, x2=1.00),
     # NIN
