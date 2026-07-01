@@ -107,6 +107,9 @@ ARABIC_EXACT_BLACKLIST: list[str] = [
     "الإمضاء",
     "إمضاء",
     "باب",
+    # Recurring OCR hallucinations
+    "الميلاء",
+    "احة",
 ]
 
 # Longer/distinct labels and place names → FUZZY match
