@@ -2,7 +2,7 @@ import io
 import cv2
 import numpy as np
 import os
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -55,7 +55,7 @@ def detect_and_rectify(frame):
     return None
 
 @app.post("/extract")
-async def extract_data(file: UploadFile = File(...)):
+async def extract_data(file: UploadFile = File(...), expected_type: str = Form(None)):
     if not file:
         return JSONResponse(status_code=400, content={"error": "No image uploaded"})
         
@@ -72,14 +72,17 @@ async def extract_data(file: UploadFile = File(...)):
         # Fallback to the manual crop provided by the frontend if contour detection fails
         rectified_card = cv2.resize(image, (856, 540))
 
-    # 1. Check if the frontend image is upside down using Template Matching
-    rectified_card, was_rotated = fix_orientation(rectified_card, templates)
+    if not expected_type:
+        # 1. Check if the frontend image is upside down using Template Matching
+        rectified_card, was_rotated = fix_orientation(rectified_card, templates)
 
-    # 2. Classify Document
-    label, _, score, _ = classify_document(rectified_card, templates)
+        # 2. Classify Document
+        label, _, score, _ = classify_document(rectified_card, templates)
 
-    if label in ["NO TEMPLATES", "OTHER DOCUMENT"]:
-        return {"error": "Unsupported or unrecognized document format. Please align the card clearly in the frame."}
+        if label in ["NO TEMPLATES", "OTHER DOCUMENT"]:
+            return {"error": "Unsupported or unrecognized document format. Please align the card clearly in the frame."}
+    else:
+        label = expected_type
 
     # 3. Extract Text via PaddleOCR
     result = ocr_manager.process(label, rectified_card)
@@ -197,4 +200,77 @@ async def extract_from_url(payload: ExtractUrlPayload):
         
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+
+
+
+# --- VISITOR MANAGEMENT ENDPOINTS ---
+
+from pydantic import BaseModel
+import database as db
+
+class UserCreate(BaseModel):
+    nin: str
+    french_name: str
+    arabic_name: str
+    category: str
+
+class UserUpdate(BaseModel):
+    old_nin: str
+    nin: str
+    french_name: str
+    arabic_name: str
+    category: str
+    arabic_name: str
+    category: str
+
+class LogCreate(BaseModel):
+    action: str
+
+@app.get('/stats/today')
+def get_stats_today():
+    return {'total_entries_today': db.get_total_entries_today()}
+
+@app.get('/users/{nin}')
+def check_user(nin: str):
+    user = db.get_user(nin)
+    if not user:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail='User not found')
+    user['last_action'] = db.get_last_action(nin)
+    return user
+
+@app.post('/users')
+def create_user(user: UserCreate):
+    db.create_user(user.nin, user.french_name, user.arabic_name, user.category)
+    return {'status': 'success'}
+
+@app.post('/users/{nin}/log')
+def log_user_action(nin: str, log: LogCreate):
+    db.log_access(nin, log.action)
+    return {'status': 'success'}
+
+@app.get('/users')
+def get_users():
+    return db.get_all_users()
+
+@app.get('/users/{nin}/logs')
+def get_logs(nin: str):
+    return db.get_user_logs(nin)
+
+@app.put('/users/{nin}')
+def update_user_info(nin: str, user: UserUpdate):
+    db.update_user(user.old_nin, user.nin, user.french_name, user.arabic_name, user.category)
+    return {'status': 'success'}
+
+@app.delete('/users/{nin}')
+def delete_user(nin: str):
+    db.delete_user(nin)
+    return {'status': 'success'}
+
+@app.delete('/logs/{log_id}')
+def delete_log(log_id: int):
+    db.delete_log(log_id)
+    return {'status': 'success'}
 

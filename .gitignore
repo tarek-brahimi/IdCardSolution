@@ -5,3 +5,7 @@ __pycache__/
 *.pyc
 saved_id_cards/
 IdCardSolution/
+
+access_management.db
+frontend/access_management.db
+.env

@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Access Management System</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- FontAwesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+
+    <!-- SIDEBAR NAVIGATION -->
+    <nav class="sidebar">
+        <div class="sidebar-header">
+            <h2>Access Manager</h2>
+        </div>
+        <ul class="nav-links">
+            <li><a href="#" onclick="showView('dashboard-view')" id="nav-dashboard" class="active"><i class="fas fa-chart-line"></i> Dashboard</a></li>
+            <li><a href="#" onclick="showView('scan-view')" id="nav-scan"><i class="fas fa-id-card"></i> Scan ID</a></li>
+            <li><a href="#" onclick="showView('profiles-view')" id="nav-profiles"><i class="fas fa-users"></i> Profiles & Logs</a></li>
+        </ul>
+    </nav>
+
+    <!-- MAIN CONTENT AREA -->
+    <main class="content">
+
+        <!-- DASHBOARD VIEW -->
+        <section id="dashboard-view" class="view active">
+            <h1>Overview</h1>
+            <div class="dashboard-widget">
+                <h3>Total Entries Today</h3>
+                <p id="total-entries" class="stat-number">0</p>
+            </div>
+        </section>
+
+        <!-- SCAN ID VIEW -->
+        <section id="scan-view" class="view">
+            <h1>Biometric ID Scanner</h1>
+            
+            <div id="scan-status-banner" class="status-banner mb-20">Ready to Scan</div>
+            
+            <div class="scanner-container">
+                <div class="camera-controls">
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="cam-toggle" onchange="toggleCameraSource()">
+                        <span class="slider round"></span>
+                    </label>
+                    <span id="cam-toggle-label">Use IP Webcam</span>
+                </div>
+                
+                <div id="ip-webcam-settings" class="hidden form-group" style="width: 100%; max-width: 640px; margin-top: 10px;">
+                    <label>IP Webcam MJPEG URL:</label>
+                    <input type="text" id="ip-cam-url" placeholder="http://192.168.1.x:8080/video" value="http://192.168.1.200:8080/video">
+                    <button class="btn btn-primary" onclick="connectIPWebcam()" style="margin-top: 5px; width: 100%;">Connect</button>
+                </div>
+
+                <div class="video-container" style="margin-top: 20px;">
+                    <!-- Local Device Camera -->
+                    <video id="videoElement" autoplay playsinline></video>
+                    <!-- IP Webcam MJPEG Stream -->
+                    <img id="ipVideoElement" crossorigin="anonymous" style="display: none; width: 100%;">
+                    <canvas id="canvasElement"></canvas>
+                </div>
+                
+                <div class="controls">
+                    <button id="extractBtn" class="btn btn-primary btn-large"><i class="fas fa-camera"></i> Capture & Extract</button>
+                    <button id="resetScanBtn" class="btn btn-danger btn-large hidden" onclick="resetScanState()"><i class="fas fa-times"></i> Reset Scan</button>
+                </div>
+
+                <div id="loadingIndicator" class="loading-indicator hidden">
+                    <div class="spinner"></div>
+                    <p>Extracting data... Please wait.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- PROFILES LIST VIEW -->
+        <section id="profiles-view" class="view">
+            <h1>Registered Profiles</h1>
+            <div class="profiles-container">
+                <table class="profiles-table">
+                    <thead>
+                        <tr>
+                            <th>NIN</th>
+                            <th>Name</th>
+                            <th>Category</th>
+                            <th>Registered On</th>
+                        </tr>
+                    </thead>
+                    <tbody id="profiles-tbody">
+                        <!-- Profiles injected by JS -->
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- PROFILE DETAIL VIEW (Replaces Logs Modal) -->
+        <section id="profile-detail-view" class="view">
+            <button class="btn btn-primary mb-20" onclick="showView('profiles-view')"><i class="fas fa-arrow-left"></i> Back to Profiles</button>
+            <h1 id="pd-title">Member Profile</h1>
+            
+            <div class="profile-layout">
+                <!-- Profile Edit Form -->
+                <div class="profile-card">
+                    <h3>Edit Information</h3>
+                    <form id="edit-profile-form">
+                        <div class="form-group">
+                            <label>NIN:</label>
+                            <input type="text" id="pd-nin" required>
+                        </div>
+                        <div class="form-group">
+                            <label>French Name:</label>
+                            <input type="text" id="pd-french">
+                        </div>
+                        <div class="form-group">
+                            <label>Arabic Name:</label>
+                            <input type="text" id="pd-arabic">
+                        </div>
+                        <div class="form-group">
+                            <label>Category:</label>
+                            <select id="pd-category">
+                                <option value="Visiteur">Visiteur</option>
+                                <option value="Stagiaire">Stagiaire</option>
+                                <option value="Apprenti longue durée">Apprenti longue durée</option>
+                            </select>
+                        </div>
+                        <button type="submit" class="btn btn-success">Save Changes</button>
+                        <button type="button" class="btn btn-danger" onclick="deleteProfile()" style="margin-top:10px; width:100%;">Delete Profile</button>
+                    </form>
+                </div>
+
+                <!-- Logs Table -->
+                <div class="logs-card">
+                    <h3>Access History</h3>
+                    <div class="table-scroll">
+                        <table class="logs-table">
+                            <thead>
+                                <tr>
+                                    <th>Action</th>
+                                    <th>Timestamp</th>
+                                    <th>Controls</th>
+                                </tr>
+                            </thead>
+                            <tbody id="pd-logs-tbody">
+                                <!-- Logs injected by JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- MODAL: CREATE PROFILE (Workflow A) -->
+    <div id="modal-create" class="modal">
+        <div class="modal-content">
+            <span class="close-btn" onclick="closeModal('modal-create')">&times;</span>
+            <h2>Create New Profile</h2>
+            <form id="create-profile-form">
+                <div class="form-group">
+                    <label>NIN:</label>
+                    <input type="text" id="cp-nin" required readonly>
+                </div>
+                <div class="form-group">
+                    <label>French Name:</label>
+                    <input type="text" id="cp-french">
+                </div>
+                <div class="form-group">
+                    <label>Arabic Name:</label>
+                    <input type="text" id="cp-arabic">
+                </div>
+                <div class="form-group">
+                    <label>Category:</label>
+                    <select id="cp-category" required>
+                        <option value="Visiteur">Visiteur</option>
+                        <option value="Stagiaire">Stagiaire</option>
+                        <option value="Apprenti longue durée">Apprenti longue durée</option>
+                    </select>
+                </div>
+                <button type="submit" class="btn btn-success">Confirm & Save</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- MODAL: CHECK-IN / CHECK-OUT (Workflow B) -->
+    <div id="modal-check" class="modal">
+        <div class="modal-content text-center">
+            <span class="close-btn" onclick="closeModal('modal-check')">&times;</span>
+            <h2>Member Found</h2>
+            <h3 id="mc-name" class="member-name"></h3>
+            <p id="mc-nin" class="text-muted"></p>
+            
+            <div class="action-buttons">
+                <button id="btn-checkin" class="btn btn-success btn-large">Check-In</button>
+                <button id="btn-checkout" class="btn btn-danger btn-large">Check-Out</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

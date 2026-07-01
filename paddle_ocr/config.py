@@ -110,6 +110,9 @@ ARABIC_EXACT_BLACKLIST: list[str] = [
     # Recurring OCR hallucinations
     "الميلاء",
     "احة",
+    "الإسو",
+    "رقع",
+    "لرالا",
 ]
 
 # Longer/distinct labels and place names → FUZZY match
