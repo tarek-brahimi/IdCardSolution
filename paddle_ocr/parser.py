@@ -176,11 +176,10 @@ class OCRParser:
 
     # ── Arabic Name ──────────────────────────────────────────────────
     def extract_arabic_name(self, boxes: List[OCRBox]) -> FieldResult:
-        raw_texts: list[str] = []
+        raw_texts: list[str] = [b.text for b in boxes]
         name_parts: list[tuple[str, float, float]] = []
 
         for box in boxes:
-            raw_texts.append(box.text)
             text = _normalise(box.text)
 
             if not text or box.confidence < NAME_CONFIDENCE_THRESHOLD:
@@ -189,21 +188,39 @@ class OCRParser:
             if not _is_arabic(text):
                 continue
 
-            # PaddleOCR outputs visual RTL. Reverse characters to get logical Arabic string!
-            # e.g., "ةقاطب" becomes "بطاقة"
+            # PaddleOCR outputs visual RTL. Reverse characters to get logical Arabic.
             text = text[::-1]
 
-            # Remove blacklisted keywords instead of skipping the entire box
-            for kw in ARABIC_BLACKLIST_KEYWORDS:
-                if kw in text:
-                    text = text.replace(kw, "")
+            # --- Colon-based label stripping ---
+            # Algerian cards use "label: value" format (e.g. "اللقب: محمدي")
+            # Split on colons and keep only non-label fragments
+            if ":" in text or "،" in text or "؛" in text:
+                # Split on colons, Arabic comma, Arabic semicolon
+                fragments = re.split(r"[:،؛]", text)
+                kept = []
+                for frag in fragments:
+                    frag = frag.strip()
+                    if not frag:
+                        continue
+                    # If this fragment IS a blacklisted label, skip it
+                    if _contains_blacklisted(frag, ARABIC_BLACKLIST_KEYWORDS):
+                        continue
+                    kept.append(frag)
+                text = " ".join(kept)
+            else:
+                # No colons — check if the entire text is blacklisted
+                if _contains_blacklisted(text, ARABIC_BLACKLIST_KEYWORDS):
+                    continue
 
-            # Skip single characters or strings that are just numbers/punctuation
-            cleaned = re.sub(r"[^\w\s]", "", text).strip()
-            if len(cleaned) < 2:
+            # Strip digits and punctuation, keep only Arabic letters + spaces
+            text = re.sub(r"[0-9]", "", text)
+            text = re.sub(r"[^\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF\s]", "", text)
+            text = re.sub(r"\s+", " ", text).strip()
+
+            if len(text) < 2:
                 continue
 
-            name_parts.append((cleaned, box.confidence, box.center_y))
+            name_parts.append((text, box.confidence, box.center_y))
 
         if not name_parts:
             return FieldResult(

@@ -86,6 +86,50 @@ async def extract_data(file: UploadFile = File(...)):
 
     return result
 
+@app.post("/debug")
+async def debug_ocr(file: UploadFile = File(...)):
+    """Returns raw OCR boxes with positions for debugging."""
+    contents = await file.read()
+    nparr = np.frombuffer(contents, np.uint8)
+    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if image is None:
+        return {"error": "Invalid image"}
+
+    rectified_card = detect_and_rectify(image)
+    if rectified_card is None:
+        rectified_card = cv2.resize(image, (856, 540))
+
+    rectified_card, _ = fix_orientation(rectified_card, templates)
+    label, _, score, _ = classify_document(rectified_card, templates)
+
+    h, w = rectified_card.shape[:2]
+
+    # Run OCR for both languages
+    from paddle_ocr.extractor import OCRExtractor
+    extractor = ocr_manager._extractor
+    raw_boxes = extractor.extract(label, rectified_card)
+
+    debug_data = {"document_type": label, "image_size": f"{w}x{h}", "fields": {}}
+    for field_name, boxes in raw_boxes.items():
+        box_list = []
+        for b in boxes:
+            box_list.append({
+                "text": b.text,
+                "reversed": b.text[::-1],
+                "confidence": round(b.confidence, 3),
+                "center_x_rel": round(b.center_x / w, 3),
+                "center_y_rel": round(b.center_y / h, 3),
+                "center_x": round(b.center_x, 1),
+                "center_y": round(b.center_y, 1),
+            })
+        debug_data["fields"][field_name] = box_list
+
+    # Also include the parsed result
+    result = ocr_manager.process(label, rectified_card)
+    debug_data["parsed_result"] = result
+
+    return debug_data
+
 from pydantic import BaseModel
 import requests
 
