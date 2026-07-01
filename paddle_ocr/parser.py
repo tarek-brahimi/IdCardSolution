@@ -24,9 +24,11 @@ import unicodedata
 from typing import List
 
 from .config import (
-    ARABIC_BLACKLIST_KEYWORDS,
+    ARABIC_EXACT_BLACKLIST,
+    ARABIC_FUZZY_BLACKLIST,
     DEFAULT_CONFIDENCE_THRESHOLD,
     FRENCH_BLACKLIST_KEYWORDS,
+    FUZZY_BLACKLIST_THRESHOLD,
     NAME_CONFIDENCE_THRESHOLD,
     NIN_CONFIDENCE_THRESHOLD,
     NIN_EXACT_LENGTH,
@@ -74,6 +76,39 @@ def _contains_blacklisted(text: str, blacklist: list[str]) -> bool:
     for kw in blacklist:
         if kw in lower or kw in stripped:
             return True
+    return False
+
+
+def _is_blacklisted(word: str, exact_list: list[str], fuzzy_list: list[str], threshold: float) -> bool:
+    """Return True if *word* is blacklisted.
+    
+    Uses difflib.SequenceMatcher to catch OCR misreadings of labels, e.g.:
+      التعريف → الشعريف  (ratio ≈ 0.71)
+    Short labels (like الإسم or الجنس) are exact-matched only to avoid 
+    false positives with actual names like إلياس.
+    """
+    if len(word) < 3:
+        return True  # 1 or 2 char fragments are never Arabic names
+
+    # Exact match for short/risky labels
+    for kw in exact_list:
+        if kw == word:
+            return True
+
+    # Fuzzy match for long labels & place names
+    from difflib import SequenceMatcher
+    w = unicodedata.normalize("NFD", word)
+    w = "".join(c for c in w if unicodedata.category(c) != "Mn")
+    
+    for kw in fuzzy_list:
+        kw_stripped = unicodedata.normalize("NFD", kw)
+        kw_stripped = "".join(c for c in kw_stripped if unicodedata.category(c) != "Mn")
+        
+        ratio = SequenceMatcher(None, w, kw_stripped).ratio()
+        if ratio >= threshold:
+            logger.debug("Fuzzy blacklist: '%s' ~ '%s' (%.2f >= %.2f)", word, kw, ratio, threshold)
+            return True
+            
     return False
 
 
@@ -191,36 +226,28 @@ class OCRParser:
             # PaddleOCR outputs visual RTL. Reverse characters to get logical Arabic.
             text = text[::-1]
 
-            # --- Colon-based label stripping ---
-            # Algerian cards use "label: value" format (e.g. "اللقب: محمدي")
-            # Split on colons and keep only non-label fragments
-            if ":" in text or "،" in text or "؛" in text:
-                # Split on colons, Arabic comma, Arabic semicolon
-                fragments = re.split(r"[:،؛]", text)
-                kept = []
-                for frag in fragments:
-                    frag = frag.strip()
-                    if not frag:
-                        continue
-                    # If this fragment IS a blacklisted label, skip it
-                    if _contains_blacklisted(frag, ARABIC_BLACKLIST_KEYWORDS):
-                        continue
-                    kept.append(frag)
-                text = " ".join(kept)
-            else:
-                # No colons — check if the entire text is blacklisted
-                if _contains_blacklisted(text, ARABIC_BLACKLIST_KEYWORDS):
-                    continue
-
             # Strip digits and punctuation, keep only Arabic letters + spaces
             text = re.sub(r"[0-9]", "", text)
             text = re.sub(r"[^\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF\s]", "", text)
             text = re.sub(r"\s+", " ", text).strip()
 
-            if len(text) < 2:
+            if not text:
                 continue
 
-            name_parts.append((text, box.confidence, box.center_y))
+            # Split into individual words and filter each one
+            words = text.split()
+            kept_words = []
+            for word in words:
+                word = word.strip()
+                if _is_blacklisted(word, ARABIC_EXACT_BLACKLIST, ARABIC_FUZZY_BLACKLIST, FUZZY_BLACKLIST_THRESHOLD):
+                    continue
+                kept_words.append(word)
+
+            if not kept_words:
+                continue
+
+            clean_text = " ".join(kept_words)
+            name_parts.append((clean_text, box.confidence, box.center_y))
 
         if not name_parts:
             return FieldResult(

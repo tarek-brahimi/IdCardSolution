@@ -89,15 +89,9 @@ NIN_EXACT_LENGTH: int = 18
 # ──────────────────────────────────────────────
 # Keyword blacklists — text to ignore
 # ──────────────────────────────────────────────
-# Common header / label text that appears on cards but is NOT a name.
-ARABIC_BLACKLIST_KEYWORDS: list[str] = [
-    "الجمهورية",
-    "الجزائرية",
-    "الديمقراطية",
-    "الشعبية",
-    "بطاقة",
-    "التعريف",
-    "الوطنية",
+
+# Short labels that are too similar to common Arabic names → EXACT match only
+ARABIC_EXACT_BLACKLIST: list[str] = [
     "اللقب",
     "الإسم",
     "الاسم",
@@ -110,23 +104,48 @@ ARABIC_BLACKLIST_KEYWORDS: list[str] = [
     "رقم",
     "رخصة",
     "السياقة",
+    "الإمضاء",
+    "إمضاء",
+    "باب",
+]
+
+# Longer/distinct labels and place names → FUZZY match
+ARABIC_FUZZY_BLACKLIST: list[str] = [
+    "الجمهورية",
+    "الجزائرية",
+    "الديمقراطية",
+    "الشعبية",
+    "بطاقة",
+    "التعريف",
+    "الوطنية",
+    "الوطني",
     "الإصدار",
     "الانتهاء",
     "سلطة",
     "السلطة",
-    "الوطني",
-    "الإمضاء",
-    "إمضاء",
-    # Specific OCR hallucinations of labels
-    "الثقية",
-    "الوطلي",
-    "ررققم",
-    "كور",
-    "الااة",
-    "الاكتمار",
     "وزارة",
     "الداخلية",
+    "الجزائر",
+    "البحري",
+    "القبة",
+    "الوادي",
+    "وهران",
+    "قسنطينة",
+    "عنابة",
+    "بجاية",
+    "تيزي",
+    "وزو",
+    "البليدة",
+    "سطيف",
+    "باتنة",
+    "بسكرة",
+    "ولاية",
+    "دائرة",
+    "بلدية",
 ]
+
+# Fuzzy matching threshold
+FUZZY_BLACKLIST_THRESHOLD: float = 0.65
 
 FRENCH_BLACKLIST_KEYWORDS: list[str] = [
     "republique",
